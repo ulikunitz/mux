@@ -3,9 +3,12 @@
     "ignorePaths": [],
     "dictionaryDefinitions": [],
     "dictionaries": [],
-    "words": [],
+    "words": [
+        "muxes"
+    ],
     "ignoreWords": [
-        "mkcert"
+        "mkcert",
+        "objectname"
     ],
     "import": []
 }
