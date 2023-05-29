@@ -3,6 +3,8 @@ package mux_test
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -89,4 +91,68 @@ func TestMux(t *testing.T) {
 		}
 		t.Logf("response: %s", data)
 	}
+}
+
+func Example() {
+	type out struct {
+		Host      string
+		Method    string
+		Path      string
+		HandlerID string
+		VarMap    map[string]string
+	}
+
+	h := func(w http.ResponseWriter, r *http.Request) {
+		header := w.Header()
+		header.Set("Content-Type", "application/json")
+		out := out{
+			Host:   r.Host,
+			Method: r.Method,
+			Path:   r.URL.Path,
+			VarMap: mux.Vars(r),
+		}
+		data, err := json.MarshalIndent(&out, "", "  ")
+		if err != nil {
+			http.Error(w, fmt.Sprintf("error %s", err),
+				http.StatusInternalServerError)
+			return
+		}
+
+		_, err = w.Write(data)
+		if err != nil {
+			panic(fmt.Errorf("w.Write(data) error %s", err))
+
+		}
+	}
+
+	m := mux.New()
+	m.HandleFunc("{method} {host}/item/{itemNr}", h)
+	m.HandleFunc("/foo/{remainder...}", h)
+
+	r, err := http.NewRequest("GET", "https://example.org/item/1", nil)
+	if err != nil {
+		log.Fatalf("http.NewRequest error %s", err)
+	}
+
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+	resp := w.Result()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatalf("io.ReadAll error %s", err)
+	}
+
+	fmt.Printf("%s", data)
+	// Output:
+	// {
+	//   "Host": "example.org",
+	//   "Method": "GET",
+	//   "Path": "/item/1",
+	//   "HandlerID": "",
+	//   "VarMap": {
+	//     "host": "example.org",
+	//     "itemNr": "1",
+	//     "method": "GET"
+	//   }
+	// }
 }

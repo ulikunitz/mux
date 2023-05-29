@@ -24,6 +24,7 @@ func TestHandle(t *testing.T) {
 		{p: "POST example.com/item/{user}"},
 		{p: "/{foo", fail: true},
 		{p: "POS example.com/foo", fail: true},
+		{p: "PATCH /foo/{id}"},
 	}
 	for _, tc := range tests {
 		var mux Mux

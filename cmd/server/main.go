@@ -1,3 +1,5 @@
+// Server provides an example TLS server to test the new mux in a realistic
+// environment.
 package main
 
 import (
@@ -97,6 +99,13 @@ func main() {
 	m.Handle("{method} /ding/{dingID}/dong/{dongID}", tcHandler("4"))
 	m.Handle("/foo/{foo...}", tcHandler("4"))
 	m.Handle("/{$}", tcHandler("5"))
+	m.Handle("/a/{a2}/a", tcHandler("h2a"))
+	m.Handle("/a/{a2}/b", tcHandler("h2b"))
+	m.Handle("/a/{a1}/a", tcHandler("h1"))
+	m.Handle("/b/{b2...}", tcHandler("b2"))
+	// The following command creates a panic because the pattern is
+	// redundant with the pattern above.
+	// m.Handle("/b/{b1...}", tcHandler("b1"))
 
 	tlsConfig := &tls.Config{
 		MinVersion: tls.VersionTLS12,

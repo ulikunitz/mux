@@ -1,8 +1,21 @@
-// Package mux implements a mux as proposed in [Discussion].
+// Package mux implements a mux as proposed in [discussion].
 //
-// # Note that I have copied
+// The mux is a prototype and experimental. It is not widely tested and
+// optimized. Please report any issues you may encounter in [module repo]
 //
-// [Discussion]: https://github.com/golang/go/discussions/60227
+// The mux supports following patterns:
+//
+//	m.Handle("GET example.org/a/{id}/c", handler1)
+//	m.Handle("PATCH example.org/a/{id}")
+//	m.Handle("{method} {host}/foo", handler2)
+//	m.Handle("/foo/{remainder...}")
+//	m.Handle("/simple", handler3)
+//	m.Handle("{host}/{$}")
+//
+// See [Mux.Handle] for more descriptions of the semantics.
+//
+// [discussion]: https://github.com/golang/go/discussions/60227
+// [module repo]: https://github.com/ulikunitz/mux
 package mux
 
 import (
@@ -28,7 +41,7 @@ const (
 )
 
 // Vars retrieves the variable segment map from the request. The function
-// returns always an initialized map even if it maybe empty.
+// returns always an initialized map, which may be empty.
 func Vars(r *http.Request) map[string]string {
 	ctx := r.Context()
 	m := ctx.Value(varMapKey)
@@ -60,7 +73,8 @@ func New() *Mux {
 	return &Mux{}
 }
 
-// convertPatterns converts a pattern string into a pattern slice.
+// convertPatterns converts a pattern string into a pattern slice. It checks for
+// correct method names.
 func convertPattern(p string) (s []string, err error) {
 	var (
 		method string
@@ -109,6 +123,31 @@ func convertPattern(p string) (s []string, err error) {
 	return s, nil
 }
 
+// Handle registers the provided handler for the given pattern.
+//
+// Examples are:
+//
+//	m.Handle("GET example.org/a/{id}/c", handler1)
+//	m.Handle("{method} {host}/foo", handler2)
+//	m.Handle("/simple", handler3)
+//	m.Handle("{host}/{$}")
+//
+// Following patterns will be supported:
+//
+//	m.Handle("/a/{a2}/a", h2a)
+//	m.Handle("/a/{a2}/b", h2b)
+//	m.Handle("/a/{a1}/a", h1)
+//
+// A request /a/foo/a will always resolve to h1, because a1 is lexicographic
+// before a2. The request /a/foo/b however will resolve to h2b, because b cannot
+// be satisfied by the wildcard {a1}.
+//
+// Note we are not supporting multiple suffix variables at the same position. So
+// following code leads to a panic in the second call.
+//
+//	m.Handle("/b/{b2...}")
+//	m.Handle("/b/{b1...}")
+//
 func (mux *Mux) Handle(pattern string, handler http.Handler) {
 	p, err := convertPattern(pattern)
 	if err != nil {
@@ -127,10 +166,13 @@ func (mux *Mux) Handle(pattern string, handler http.Handler) {
 	mux.root = q
 }
 
+// HandleFunc registers the handler function handler with the given pattern. It
+// calls [Handle] and supports the semantics for the pattern.
 func (mux *Mux) HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request)) {
 	mux.Handle(pattern, http.HandlerFunc(handler))
 }
 
+// searchPath converts host, method and path to a search path for the mux tree.
 func searchPath(host, method, path string) []string {
 	s := strings.Split("/"+path, "/")
 	s[0] = host
@@ -170,6 +212,8 @@ func _shouldRedirect(o *node, path []string) (t, s bool) {
 	return false, s
 }
 
+// shouldRedirect checks whether there should be a redirection for the given
+// host, method and path.
 func (mux *Mux) shouldRedirect(host, method, path string) bool {
 	p := searchPath(host, method, path)
 
@@ -179,8 +223,11 @@ func (mux *Mux) shouldRedirect(host, method, path string) bool {
 	return !t && s
 }
 
+// notFoundHandler to be used.
 var notFoundHandler = http.NotFoundHandler()
 
+// handler searches the handler for host, method and path. The context of the
+// provided request might be modified to store the variable segment map.
 func (mux *Mux) handler(r *http.Request, host, method, path string) (h http.Handler, pattern string, s *http.Request) {
 	p := searchPath(host, method, path)
 	m := make(map[string]string, 8)
@@ -195,8 +242,8 @@ func (mux *Mux) handler(r *http.Request, host, method, path string) (h http.Hand
 	return t.h, t.pattern, withVarMap(r, m)
 }
 
-// The following two functions have been copied verbatim from the Go language source
-// code.
+// The following functions and functions including ServeHTTP were copied from
+// the Go language source code and modified.
 
 func stripHostPort(h string) string {
 	// If no port on host, return unchanged
@@ -242,9 +289,9 @@ func (mux *Mux) redirectToPathSlash(host, method, path string, u *url.URL) (*url
 	return &url.URL{Path: path, RawQuery: u.RawQuery}, true
 }
 
-// HandlerReq returns the handler and the request. We need to return the request
-// because we modify the context of the request to store the variable segment
-// map.
+// HandlerReq returns the handler and possibly a new request. The return of the
+// request is required because the variable segment map has to be attached to
+// the context of the request.
 func (mux *Mux) HandlerReq(r *http.Request) (h http.Handler, pattern string, s *http.Request) {
 	// CONNECT requests are not canonicalized.
 	if r.Method == "CONNECT" {
@@ -281,6 +328,7 @@ func (mux *Mux) HandlerReq(r *http.Request) (h http.Handler, pattern string, s *
 	return mux.handler(r, host, method, r.URL.Path)
 }
 
+// ServeHTTP provides the http.Handler functionality for the mux.
 func (mux *Mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.RequestURI == "*" {
 		if r.ProtoAtLeast(1, 1) {
@@ -312,6 +360,7 @@ type node struct {
 	pattern   string
 }
 
+// insert a wildcard in lexicographic order to the node.
 func (o *node) insertWildcard(x string) {
 	i := sort.SearchStrings(o.wildcards, x)
 	if i < len(o.wildcards) {
@@ -325,14 +374,18 @@ func (o *node) insertWildcard(x string) {
 	}
 }
 
+// ErrPattern indicates that an invalid pattern has been provided.
 var ErrPattern = errors.New("mux: invalid pattern")
 
+// regular expressions for wild cards and static segments.
 var (
 	wcRegexp     = regexp.MustCompile(`^\{([_\pL][_\pL\p{Nd}]*)?(\.\.\.)?\}$`)
 	staticRegexp = regexp.MustCompile(
 		`^(?:%[0-9a-fA-F]{2}|[-:@!$&'()*+,;=A-Za-z0-9._~])*$`)
 )
 
+// matchWildcard checks whether the string is a wildcard. The function extracts
+// the wildcard, checks whether it is a suffix (e.g. {foo...}).
 func matchWildcard(s string) (wc string, suffix bool, ok bool) {
 	m := wcRegexp.FindStringSubmatch(s)
 	if m == nil {
@@ -341,10 +394,13 @@ func matchWildcard(s string) (wc string, suffix bool, ok bool) {
 	return m[1], m[2] == "...", true
 }
 
+// matchStatic checks whether s is a static segment.
 func matchStatic(s string) bool {
 	return staticRegexp.MatchString(s)
 }
 
+// register registers the handler and original pattern under node o using the
+// remaining pattern.
 func register(o *node, pattern []string, h http.Handler, origPattern string) (*node, error) {
 	var err error
 	if h == nil {
