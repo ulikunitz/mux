@@ -19,13 +19,16 @@ import (
 	"sync"
 )
 
+// ctxKey is a package specific type for context keys.
 type ctxKey int
 
+// varMapLey is the context key for variable map values.
 const (
 	varMapKey ctxKey = iota
 )
 
-// Vars retries the variable path elements from the request.
+// Vars retrieves the variable segment map from the request. The function
+// returns always an initialized map even if it maybe empty.
 func Vars(r *http.Request) map[string]string {
 	ctx := r.Context()
 	m := ctx.Value(varMapKey)
@@ -57,40 +60,68 @@ func New() *Mux {
 	return &Mux{}
 }
 
-func convertPattern(p string) []string {
+// convertPatterns converts a pattern string into a pattern slice.
+func convertPattern(p string) (s []string, err error) {
 	var (
 		method string
 	)
 	method, r, ok := strings.Cut(p, " ")
 	if ok {
-		if method == "" {
-			method = "{}"
-		}
 		p = strings.TrimLeft(r, " ")
 	} else {
+		method = ""
+	}
+	if method == "" {
 		method = "{}"
 	}
-	s := strings.Split(p, "/")
-	q := make([]string, 0, 1+len(s))
-	if len(s) > 0 && s[0] == "" {
+	if method[0] == '{' {
+		_, suffix, ok := matchWildcard(method)
+		if !ok || suffix {
+			return nil, fmt.Errorf("%w; invalid method wildcard %s",
+				ErrPattern, method)
+		}
+	} else {
+		switch method {
+		case http.MethodGet:
+		case http.MethodHead:
+		case http.MethodPost:
+		case http.MethodPut:
+		case http.MethodPatch:
+		case http.MethodConnect:
+		case http.MethodOptions:
+		case http.MethodTrace:
+		default:
+			return nil, fmt.Errorf("%w; invalid method %s",
+				ErrPattern, method)
+		}
+	}
+
+	s = strings.Split(p, "/")
+	if s[0] == "" {
 		s[0] = "{}"
 	}
-	q = append(q, s[0], method)
-	if len(s) > 1 {
-		q = append(q, s[1:]...)
+	if 1 < len(s) {
+		s = append(s[:2], s[1:]...)
+		s[1] = method
+	} else {
+		s = append(s, method)
 	}
-	return q
+	return s, nil
 }
 
 func (mux *Mux) Handle(pattern string, handler http.Handler) {
-	p := convertPattern(pattern)
+	p, err := convertPattern(pattern)
+	if err != nil {
+		err = fmt.Errorf("%w; pattern=%q", err, pattern)
+		panic(err)
+	}
 
 	mux.mutex.Lock()
 	defer mux.mutex.Unlock()
 
 	q, err := register(mux.root, p, handler, pattern)
 	if err != nil {
-		err := fmt.Errorf("%w; pattern=%q", err, pattern)
+		err = fmt.Errorf("%w; pattern=%q", err, pattern)
 		panic(err)
 	}
 	mux.root = q

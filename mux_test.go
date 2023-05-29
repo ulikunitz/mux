@@ -58,15 +58,13 @@ func TestMux(t *testing.T) {
 		method string
 		url    string
 	}{
-		/*
-			{method: "GET", url: "https://example.org/item/1"},
-			{method: "POST", url: "https://example.org/item/2"},
-			{method: "GET", url: "https://foo.example.org/item/3"},
-			{method: "GET", url: "https://example.org/foo/a/b/c"},
-			{method: "GET", url: "https://example.org/foo"},
-			{method: "GET", url: "https://example.org/foo/"},
-			{method: "GET", url: "https://foo.example.org/"},
-		*/
+		{method: "GET", url: "https://example.org/item/1"},
+		{method: "POST", url: "https://example.org/item/2"},
+		{method: "GET", url: "https://foo.example.org/item/3"},
+		{method: "GET", url: "https://example.org/foo/a/b/c"},
+		{method: "GET", url: "https://example.org/foo"},
+		{method: "GET", url: "https://example.org/foo/"},
+		{method: "GET", url: "https://foo.example.org/"},
 		{method: "GET", url: "https://foo.example.org"},
 		{method: "GET", url: "https://foo.example.org/foobar/"},
 	}
