@@ -10,7 +10,7 @@ See https://pkg.go.dev/github.com/ulikunitz/mux for documentation.
 # Installation
 
 ```
-$ go get github.com/ulikunitz/mux
+$ go get github.com/ulikunitz/mux@latest
 ```
 
 ## Copyright
