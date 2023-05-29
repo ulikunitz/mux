@@ -34,7 +34,7 @@ func Vars(r *http.Request) map[string]string {
 
 // withVarMap modifies the context of the request to store the map.
 func withVarMap(r *http.Request, m map[string]string) *http.Request {
-	if m == nil {
+	if len(m) == 0 {
 		return r
 	}
 	ctx := r.Context()
@@ -97,12 +97,55 @@ func (mux *Mux) HandleFunc(pattern string, handler func(http.ResponseWriter, *ht
 	mux.Handle(pattern, http.HandlerFunc(handler))
 }
 
-func (mux *Mux) shouldRedirectRLocked(host, method, path string) bool {
-	panic("TODO")
+func searchPath(host, method, path string) []string {
+	s := strings.Split(path, "/")
+	q := make([]string, 2+len(s))
+	q[0] = host
+	q[1] = method
+	copy(q[2:], s)
+	return q
 }
 
+func _shouldRedirect(o *node, path []string) bool {
+	if len(path) == 0 {
+		_, hasTerminalKey := o.m[terminalKey]
+		_, hasSuffixKey := o.m[suffixKey]
+		return !hasTerminalKey && hasSuffixKey
+	}
+	p := path[0]
+	q := o.m[p]
+	if q != nil {
+		return _shouldRedirect(q, path[1:])
+	}
+	q = o.m[wildcardKey]
+	if q != nil {
+		return _shouldRedirect(q, path[1:])
+	}
+	return false
+}
+
+func (mux *Mux) shouldRedirect(host, method, path string) bool {
+	p := searchPath(host, method, path)
+
+	mux.mutex.RLock()
+	defer mux.mutex.RUnlock()
+	return _shouldRedirect(mux.root, p)
+}
+
+var notFoundHandler = http.NotFoundHandler()
+
 func (mux *Mux) handler(r *http.Request, host, method, path string) (h http.Handler, pattern string, s *http.Request) {
-	panic("TODO")
+	p := searchPath(host, method, path)
+	m := make(map[string]string, 8)
+
+	mux.mutex.RLock()
+	defer mux.mutex.RUnlock()
+
+	t := findTerminal(mux.root, p, m)
+	if t != nil {
+		return notFoundHandler, "", r 
+	}
+	return t.h, t.pattern, withVarMap(r, m)
 }
 
 // stripHostPort returns h without any trailing ":<port>".
@@ -145,9 +188,7 @@ func cleanPath(p string) string {
 // not for path itself. If the path needs appending to, it creates a new
 // URL, setting the path to u.Path + "/" and returning true to indicate so.
 func (mux *Mux) redirectToPathSlash(host, method, path string, u *url.URL) (*url.URL, bool) {
-	mux.mutex.RLock()
-	shouldRedirect := mux.shouldRedirectRLocked(host, method, path)
-	mux.mutex.RUnlock()
+	shouldRedirect := mux.shouldRedirect(host, method, path)
 	if !shouldRedirect {
 		return u, false
 	}
@@ -159,9 +200,6 @@ func (mux *Mux) redirectToPathSlash(host, method, path string, u *url.URL) (*url
 // because we modify the context of the request to store the variable segment
 // map.
 func (mux *Mux) HandlerReq(r *http.Request) (h http.Handler, pattern string, s *http.Request) {
-	mux.mutex.RLock()
-	defer mux.mutex.RUnlock()
-
 	// CONNECT requests are not canonicalized.
 	if r.Method == "CONNECT" {
 		// If r.URL.Path is /tree and its handler is not registered,
@@ -337,4 +375,33 @@ func register(o *node, pattern []string, h http.Handler, origPattern string) (*n
 	}
 	o.m[p] = q
 	return o, nil
+}
+
+// findTerminal tries to find a terminal node using the path. It fills the
+// variable map m if it is not nil. If the t is nil, no terminal could be found.
+func findTerminal(o *node, path []string, m map[string]string) *node {
+	if len(path) == 0 {
+		return o.m[terminalKey]
+	}
+	p := path[0]
+	q := o.m[p]
+	if q != nil {
+		if t := findTerminal(q, path[1:], m); t != nil {
+			return t
+		}
+	}
+	q = o.m[wildcardKey]
+	if q != nil {
+		if t := findTerminal(q, path[1:], m); t != nil {
+			if m != nil && o.wildcardVar != "" {
+				m[o.wildcardVar] = p
+			}
+			return t
+		}
+	}
+	q = o.m[suffixKey]
+	if q != nil && m != nil && o.suffixVar != "" {
+			m[o.suffixVar] = strings.Join(path, "/")
+	}
+	return q
 }
