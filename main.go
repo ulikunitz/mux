@@ -7,7 +7,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
+	"path"
 	"regexp"
 	"strings"
 	"sync"
@@ -39,10 +42,11 @@ func withVarMap(r *http.Request, m map[string]string) *http.Request {
 	return r.WithContext(ctx)
 }
 
-// Mux is the the mux.
+// Mux is the the mux. We are storing all handlers in a tree, with the first
+// level for the hosts, second level for the methods and then followed by the path.
 type Mux struct {
-	mutex    sync.RWMutex
-	patterns []*pattern
+	mutex sync.RWMutex
+	root  *node
 }
 
 // New creates a new Mux instance.
@@ -50,54 +54,105 @@ func New() *Mux {
 	return &Mux{}
 }
 
-func search(patterns []*pattern, p *pattern) int {
-	i, j := 0, len(patterns)
-	for i < j {
-		h := int(uint(i+j) >> 1)
-		if patterns[h].cmp(p) < 0 {
-			i = h + 1
-		} else {
-			j = h
+func convertPattern(p string) []string {
+	var (
+		method string
+	)
+	method, r, ok := strings.Cut(p, " ")
+	if ok {
+		if method == "" {
+			method = "{}"
 		}
+		p = strings.TrimLeft(r, " ")
+	} else {
+		method = "{}"
 	}
-	return i
+	s := strings.Split(p, "/")
+	q := make([]string, 0, 1+len(s))
+	if len(s) > 0 && s[0] == "" {
+		s[0] = "{}"
+	}
+	q = append(q, s[0], method)
+	if len(s) > 1 {
+		q = append(q, s[1:]...)
+	}
+	return q
 }
 
 func (mux *Mux) Handle(pattern string, handler http.Handler) {
-	if handler == nil {
-		panic(errors.New("mux: handler is nil"))
-	}
-	p, err := parsePattern(pattern)
-	if err != nil {
-		panic(err)
-	}
-	p.handler = handler
+	p := convertPattern(pattern)
 
 	mux.mutex.Lock()
 	defer mux.mutex.Unlock()
 
-	i := search(mux.patterns, p)
-	if i < len(mux.patterns) {
-		if mux.patterns[i].cmp(p) == 0 {
-			panic(fmt.Errorf(
-				"mux: pattern %q and %q are conflicting",
-				p.str, mux.patterns[i].str))
-		}
-		mux.patterns = append(mux.patterns[:i+1], mux.patterns[i:]...)
-		mux.patterns[i] = p
-	} else {
-		mux.patterns = append(mux.patterns, p)
+	q, err := register(mux.root, p, handler, pattern)
+	if err != nil {
+		err := fmt.Errorf("%w; pattern=%q", err, pattern)
+		panic(err)
 	}
+	mux.root = q
 }
 
 func (mux *Mux) HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request)) {
 	mux.Handle(pattern, http.HandlerFunc(handler))
 }
 
-func handleRedirect(w http.ResponseWriter, r *http.Request) {
-	url := *r.URL
-	url.RawPath = url.EscapedPath() + "/"
-	http.Redirect(w, r, url.String(), http.StatusFound)
+func (mux *Mux) shouldRedirectRLocked(host, method, path string) bool {
+	panic("TODO")
+}
+
+func (mux *Mux) handler(r *http.Request, host, method, path string) (h http.Handler, pattern string, s *http.Request) {
+	panic("TODO")
+}
+
+// stripHostPort returns h without any trailing ":<port>".
+func stripHostPort(h string) string {
+	// If no port on host, return unchanged
+	if !strings.Contains(h, ":") {
+		return h
+	}
+	host, _, err := net.SplitHostPort(h)
+	if err != nil {
+		return h // on error, return unchanged
+	}
+	return host
+}
+
+// cleanPath returns the canonical path for p, eliminating . and .. elements.
+func cleanPath(p string) string {
+	if p == "" {
+		return "/"
+	}
+	if p[0] != '/' {
+		p = "/" + p
+	}
+	np := path.Clean(p)
+	// path.Clean removes trailing slash except for root;
+	// put the trailing slash back if necessary.
+	if p[len(p)-1] == '/' && np != "/" {
+		// Fast path for common case of p being the string we want:
+		if len(p) == len(np)+1 && strings.HasPrefix(p, np) {
+			np = p
+		} else {
+			np += "/"
+		}
+	}
+	return np
+}
+
+// redirectToPathSlash determines if the given path needs appending "/" to it.
+// This occurs when a handler for path + "/" was already registered, but
+// not for path itself. If the path needs appending to, it creates a new
+// URL, setting the path to u.Path + "/" and returning true to indicate so.
+func (mux *Mux) redirectToPathSlash(host, method, path string, u *url.URL) (*url.URL, bool) {
+	mux.mutex.RLock()
+	shouldRedirect := mux.shouldRedirectRLocked(host, method, path)
+	mux.mutex.RUnlock()
+	if !shouldRedirect {
+		return u, false
+	}
+	path = path + "/"
+	return &url.URL{Path: path, RawQuery: u.RawQuery}, true
 }
 
 // HandlerReq returns the handler and the request. We need to return the request
@@ -107,289 +162,179 @@ func (mux *Mux) HandlerReq(r *http.Request) (h http.Handler, pattern string, s *
 	mux.mutex.RLock()
 	defer mux.mutex.RUnlock()
 
-	for _, p := range mux.patterns {
-		if s, redirect, ok := p.match(r); ok {
-			if redirect {
-				return http.HandlerFunc(handleRedirect),
-					p.str, s
-			}
-			return p.handler, p.str, s
+	// CONNECT requests are not canonicalized.
+	if r.Method == "CONNECT" {
+		// If r.URL.Path is /tree and its handler is not registered,
+		// the /tree -> /tree/ redirect applies to CONNECT requests
+		// but the path canonicalization does not.
+		u, ok := mux.redirectToPathSlash(r.URL.Host, r.Method, r.URL.Path, r.URL)
+		if ok {
+			return http.RedirectHandler(u.String(), http.StatusMovedPermanently), u.Path, r
 		}
+
+		return mux.handler(r, r.Host, r.Method, r.URL.Path)
 	}
-	return nil, "", nil
+
+	// All other requests have any port stripped and path cleaned
+	// before passing to mux.handler.
+	host := stripHostPort(r.Host)
+	method := r.Method
+	path := cleanPath(r.URL.Path)
+
+	// If the given path is /tree and its handler is not registered,
+	// redirect for /tree/.
+	if u, ok := mux.redirectToPathSlash(host, method, path, r.URL); ok {
+		return http.RedirectHandler(u.String(),
+			http.StatusMovedPermanently), u.Path, r
+	}
+
+	if path != r.URL.Path {
+		_, pattern, _ = mux.handler(r, host, method, path)
+		u := &url.URL{Path: path, RawQuery: r.URL.RawQuery}
+		return http.RedirectHandler(u.String(), http.StatusMovedPermanently), pattern, r
+	}
+
+	return mux.handler(r, host, method, r.URL.Path)
 }
 
 func (mux *Mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	h, _, s := mux.HandlerReq(r)
-	if h != nil {
-		h.ServeHTTP(w, s)
+	if r.RequestURI == "*" {
+		if r.ProtoAtLeast(1, 1) {
+			w.Header().Set("Connection", "close")
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		return
 	}
+	h, _, s := mux.HandlerReq(r)
+	h.ServeHTTP(w, s)
 }
 
-type segType byte
-
+// Keys for the node maps. See [node].
 const (
-	static segType = iota
-	wildcard
-	extension
-	wcExtension
+	wildcardKey = "{}"
+	suffixKey   = "{...}"
+	terminalKey = "{$}"
 )
 
-// segment represents a segment pattern
-type segment struct {
-	segType segType
-	str     string
+// node describes a node in the pattern tree. Terminal nodes have the handler
+// and the pattern set, but have a nil map m and an empty wildcardVar string.
+// The special keys [wildcardKey], [suffixKey] and [terminalKey] are used. The
+// suffixKey and the terminalKey are the only keys that will point to terminal
+// nodes.
+type node struct {
+	m           map[string]*node
+	wildcardVar string
+	suffixVar   string
+	h           http.Handler
+	pattern     string
 }
 
-type pattern struct {
-	str       string
-	host      string
-	method    string
-	path      []segment
-	wildcards int
-	handler   http.Handler
-}
+var ErrPattern = errors.New("mux: invalid pattern")
 
-func (p *pattern) cmp(q *pattern) int {
-	if p == q {
-		return 0
-	}
-	if p.host != "" {
-		if q.host == "" {
-			return -1
-		}
-		if p.host < q.host {
-			return -1
-		} else if p.host > q.host {
-			return 1
-		}
-	} else if q.host != "" {
-		return 1
-	}
-	if p.method != "" {
-		if q.method == "" {
-			return -1
-		}
-		if p.method < q.method {
-			return -1
-		} else if p.method > q.method {
-			return 1
-		}
-	} else if q.host != "" {
-		return 1
-	}
-	pp, qp := p.path, q.path
-	for {
-		if len(pp) == 0 {
-			if len(qp) == 0 {
-				return 0
-			}
-			return -1
-		} else if len(qp) == 0 {
-			return 1
-		}
-		ps, qs := pp[0], qp[0]
-		switch ps.segType {
-		case static:
-			switch qs.segType {
-			case static:
-				if ps.str < qs.str {
-					return -1
-				} else if ps.str > qs.str {
-					return 1
-				}
-			default:
-				return -1
-			}
-		case wildcard:
-			switch qs.segType {
-			case static:
-				return 1
-			case wildcard:
-				break
-			default:
-				return -1
-			}
-		case wcExtension, extension:
-			switch qs.segType {
-			case static, wildcard:
-				return 1
-			}
-			return 0
-		}
-		pp, qp = pp[1:], qp[1:]
-	}
-}
+var (
+	wcRegexp     = regexp.MustCompile(`^\{([_\pL][_\pL\p{Nd}]*)?(\.\.\.)?\}$`)
+	staticRegexp = regexp.MustCompile(
+		`^(?:%[0-9a-fA-F]{2}|[-:@!$&'()*+,;=A-Za-z0-9._~])*$`)
+)
 
-func host(r *http.Request) string {
-	if host, _, found := strings.Cut(r.Host, ":"); found {
-		return host
-	}
-	return r.Host
-}
-
-func (p *pattern) match(r *http.Request) (s *http.Request, redirect, ok bool) {
-	if p.host != "" && p.host != host(r) {
-		return nil, false, false
-	}
-	if p.method != "" && p.method != r.Method {
-		return nil, false, false
-	}
-	path := r.URL.EscapedPath()
-	slash := false
-	if path[0] == '/' {
-		path = path[1:]
-		slash = true
-	}
-	var m map[string]string
-	if p.wildcards > 0 {
-		m = make(map[string]string, p.wildcards)
-	}
-	for _, seg := range p.path {
-		switch seg.segType {
-		case wcExtension:
-			m[seg.str] = path
-			fallthrough
-		case extension:
-			redirect = path == "" && !slash
-			return withVarMap(r, m), redirect, true
-		}
-		var s, r string
-		s, r, slash = strings.Cut(path, "/")
-		switch seg.segType {
-		case static:
-			if seg.str != s {
-				return nil, false, false
-			}
-		case wildcard:
-			m[seg.str] = s
-		}
-		path = r
-	}
-	if path != "" || slash {
-		return nil, false, false
-	}
-	return withVarMap(r, m), false, true
-}
-
-var wcRegexp = regexp.MustCompile(`^\{([_\pL][_\pL\p{Nd}]*)(\.\.\.)?\}$`)
-
-func matchWildcard(s string) (wc string, ext bool, ok bool) {
+func matchWildcard(s string) (wc string, suffix bool, ok bool) {
 	m := wcRegexp.FindStringSubmatch(s)
 	if m == nil {
 		return "", false, false
 	}
-	wc = m[1]
-	if m[2] == "..." {
-		ext = true
-	}
-	return wc, ext, true
+	return m[1], m[2] == "...", true
 }
-
-var staticRegexp = regexp.MustCompile(
-	`^(?:%[0-9a-fA-F]{2}|[-:@!$&'()*+,;=A-Za-z0-9._~])*$`)
 
 func matchStatic(s string) bool {
 	return staticRegexp.MatchString(s)
 }
 
-func parsePattern(s string) (p *pattern, err error) {
-	p = &pattern{str: s}
-	method, r, found := strings.Cut(s, " ")
-	if found {
-		switch method {
-		case http.MethodGet:
-		case http.MethodHead:
-		case http.MethodPost:
-		case http.MethodPut:
-		case http.MethodPatch:
-		case http.MethodDelete:
-		case http.MethodConnect:
-		case http.MethodOptions:
-		case http.MethodTrace:
-		default:
-			return nil, fmt.Errorf(
-				"mux: method %q not supported", method)
-		}
-		p.method = method
-		s = strings.TrimLeft(r, " ")
+func register(o *node, pattern []string, h http.Handler, origPattern string) (*node, error) {
+	var err error
+	if h == nil {
+		panic("handler h is nil")
 	}
-	if s[0] != '/' {
-		host, r, found := strings.Cut(s, "/")
-		if !found {
-			return nil, fmt.Errorf(
-				"mux: pattern %q doesn't have a path component",
-				p.str)
+	if len(pattern) == 0 {
+		if o != nil {
+			if q := o.m[terminalKey]; q != nil {
+				return o, fmt.Errorf(
+					"%w; redundant pattern", ErrPattern)
+			}
+		} else {
+			o = &node{m: make(map[string]*node, 1)}
 		}
-		p.host = host
-		s = r
-	} else {
-		s = s[1:]
+		o.m[terminalKey] = &node{h: h, pattern: origPattern}
+		return o, nil
 	}
-	for {
-		if s == "" {
-			p.path = append(p.path, segment{
-				segType: extension,
-			})
-			break
+	p := pattern[0]
+	if p == "" && len(pattern) == 1 {
+		p = "{...}"
+	}
+	if len(p) > 0 && p[0] == '{' {
+		if p == "{$}" {
+			if len(pattern) > 1 {
+				return o, fmt.Errorf("%w; {$} not at end",
+					ErrPattern)
+			}
+			return register(o, nil, h, origPattern)
 		}
-		if seg, r, found := strings.Cut(s, "/"); found {
-			if wc, ext, ok := matchWildcard(seg); ok {
-				if ext {
-					return nil, fmt.Errorf(
-						"mux: ... extension non-last segment of %q",
-						p.str)
+		wcVar, suffix, ok := matchWildcard(p)
+		if !ok {
+			return o, fmt.Errorf("%w; %s invalid wildcard",
+				ErrPattern, p)
+		}
+		if suffix {
+			if len(pattern) > 1 {
+				return o, fmt.Errorf("%w; %s is not at end",
+					ErrPattern, p)
+			}
+			if o != nil {
+				if q := o.m[suffixKey]; q != nil {
+					return o, fmt.Errorf(
+						"%w; redundant pattern",
+						ErrPattern)
 				}
-				p.path = append(p.path, segment{
-					segType: wildcard,
-					str:     wc,
-				})
-				s = r
-				continue
+			} else {
+				o = &node{m: make(map[string]*node, 1)}
 			}
-			if !matchStatic(seg) {
-				return nil, fmt.Errorf(
-					"mux: %q is not a segment", seg)
+			o.m[suffixKey] = &node{h: h}
+			o.suffixVar = wcVar
+			return o, nil
+		}
+		var q *node
+		if o != nil {
+			if q = o.m[wildcardKey]; q != nil {
+				if o.wildcardVar != wcVar {
+					return o, fmt.Errorf(
+						"%w; non-matching wildcard %s",
+						ErrPattern, p)
+				}
 			}
-			p.path = append(p.path, segment{
-				segType: static,
-				str:     seg,
-			})
-			s = r
-			continue
+		} else {
+			o = &node{m: make(map[string]*node, 1)}
 		}
-		if s == "{$}" {
-			break
+		q, err = register(q, pattern[1:], h, origPattern)
+		if err != nil {
+			return o, err
 		}
-		if wc, ext, ok := matchWildcard(s); ok {
-			if ext {
-				p.path = append(p.path, segment{
-					segType: wcExtension,
-					str:     wc,
-				})
-				break
-			}
-			p.path = append(p.path, segment{
-				segType: wildcard,
-				str:     wc,
-			})
-			break
-		}
-		if !matchStatic(s) {
-			return nil, fmt.Errorf(
-				"mux: %q is not a path element", s)
-		}
-		p.path = append(p.path, segment{
-			segType: static,
-			str:     s,
-		})
-		break
+		o.m[wildcardKey] = q
+		o.wildcardVar = wcVar
+		return o, nil
 	}
-	for _, seg := range p.path {
-		switch seg.segType {
-		case wildcard, wcExtension:
-			p.wildcards++
-		}
+	if !matchStatic(p) {
+		return o, fmt.Errorf("%w; segment %q invalid", ErrPattern, p)
 	}
-	return p, nil
+	var q *node
+	if o != nil {
+
+		q = o.m[p]
+	} else {
+		o = &node{m: make(map[string]*node, 1)}
+	}
+	q, err = register(q, pattern[1:], h, origPattern)
+	if err != nil {
+		return o, err
+	}
+	o.m[p] = q
+	return o, nil
 }

@@ -15,6 +15,8 @@ Handler must do the following:
 > If there is no registered handler that applies to the request, Handler returns
 > a “page not found” handler and an empty pattern.
 
+It appears also that the CONNECT method is handled specially.
+
 ## Proposal
 
 [Discussion on github.com](https://github.com/golang/go/discussions/60227)

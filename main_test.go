@@ -1,8 +1,13 @@
 package mux
 
-import "testing"
+import (
+	"net/http"
+	"testing"
+)
 
-func TestParsePattern(t *testing.T) {
+func TestHandle(t *testing.T) {
+
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
 	tests := []struct {
 		p    string
 		fail bool
@@ -20,19 +25,23 @@ func TestParsePattern(t *testing.T) {
 		{p: "/{foo", fail: true},
 	}
 	for _, tc := range tests {
-		p, err := parsePattern(tc.p)
+		var mux Mux
+		var r any
+		func() {
+			defer func() {
+				r = recover()
+			}()
+			mux.Handle(tc.p, h)
+		}()
 		if tc.fail {
-			if err == nil {
-				t.Errorf("pattern %q didn't fail as expected",
-					tc.p)
+			if r == nil {
+				t.Errorf("%q: no panic; expected it", tc.p)
 			}
 			continue
 		}
-		if err != nil {
-			t.Errorf("pattern %q: got error %s; want no error",
-				tc.p, err)
+		if r != nil {
+			t.Errorf("%q: got panic %v; expected none", tc.p, r)
 			continue
 		}
-		t.Logf("pattern: %+v", *p)
 	}
 }
