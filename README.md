@@ -5,13 +5,13 @@ Experimental mux related to https://github.com/golang/go/discussions/60227.
 This is a functional implementation based on the ideas in the above discussion.
 It is non-optimized implementation.
 
-See https://pkg.go.dev/github.com/ulikunitz/mux for documentation.
-
 # Installation
 
+Import it in your program and run
 ```
-$ go get github.com/ulikunitz/mux@latest
-```
+$ go get github.com/ulikunitz/mux
+````
+if required.
 
 ## Copyright
 
