@@ -1,5 +1,7 @@
 // Package mux implements a mux as proposed in [Discussion].
 //
+// # Note that I have copied
+//
 // [Discussion]: https://github.com/golang/go/discussions/60227
 package mux
 
@@ -12,6 +14,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -98,30 +101,42 @@ func (mux *Mux) HandleFunc(pattern string, handler func(http.ResponseWriter, *ht
 }
 
 func searchPath(host, method, path string) []string {
-	s := strings.Split(path, "/")
-	q := make([]string, 2+len(s))
-	q[0] = host
-	q[1] = method
-	copy(q[2:], s)
-	return q
+	s := strings.Split("/"+path, "/")
+	s[0] = host
+	s[1] = method
+	return s
 }
 
-func _shouldRedirect(o *node, path []string) bool {
+// _shouldRedirect returns whether there is a  direct terminal key (t=true) or
+// whether there is a suffix key (s == true). The application should redirect if
+// !t && s.
+func _shouldRedirect(o *node, path []string) (t, s bool) {
 	if len(path) == 0 {
-		_, hasTerminalKey := o.m[terminalKey]
-		_, hasSuffixKey := o.m[suffixKey]
-		return !hasTerminalKey && hasSuffixKey
+		_, t = o.m[terminalKey]
+		_, s = o.m[suffixKey]
+		return t, s
 	}
 	p := path[0]
 	q := o.m[p]
+	var x bool
 	if q != nil {
-		return _shouldRedirect(q, path[1:])
+		t, x = _shouldRedirect(q, path[1:])
+		s = s || x
+		if t {
+			return t, s
+		}
 	}
-	q = o.m[wildcardKey]
-	if q != nil {
-		return _shouldRedirect(q, path[1:])
+	for _, key := range o.wildcards {
+		q = o.m[key]
+		if q != nil {
+			t, x = _shouldRedirect(q, path[1:])
+			s = s || x
+			if t {
+				return t, s
+			}
+		}
 	}
-	return false
+	return false, s
 }
 
 func (mux *Mux) shouldRedirect(host, method, path string) bool {
@@ -129,7 +144,8 @@ func (mux *Mux) shouldRedirect(host, method, path string) bool {
 
 	mux.mutex.RLock()
 	defer mux.mutex.RUnlock()
-	return _shouldRedirect(mux.root, p)
+	t, s := _shouldRedirect(mux.root, p)
+	return !t && s
 }
 
 var notFoundHandler = http.NotFoundHandler()
@@ -142,13 +158,15 @@ func (mux *Mux) handler(r *http.Request, host, method, path string) (h http.Hand
 	defer mux.mutex.RUnlock()
 
 	t := findTerminal(mux.root, p, m)
-	if t != nil {
-		return notFoundHandler, "", r 
+	if t == nil {
+		return notFoundHandler, "", r
 	}
 	return t.h, t.pattern, withVarMap(r, m)
 }
 
-// stripHostPort returns h without any trailing ":<port>".
+// The following two functions have been copied verbatim from the Go language source
+// code.
+
 func stripHostPort(h string) string {
 	// If no port on host, return unchanged
 	if !strings.Contains(h, ":") {
@@ -161,7 +179,6 @@ func stripHostPort(h string) string {
 	return host
 }
 
-// cleanPath returns the canonical path for p, eliminating . and .. elements.
 func cleanPath(p string) string {
 	if p == "" {
 		return "/"
@@ -170,8 +187,6 @@ func cleanPath(p string) string {
 		p = "/" + p
 	}
 	np := path.Clean(p)
-	// path.Clean removes trailing slash except for root;
-	// put the trailing slash back if necessary.
 	if p[len(p)-1] == '/' && np != "/" {
 		// Fast path for common case of p being the string we want:
 		if len(p) == len(np)+1 && strings.HasPrefix(p, np) {
@@ -249,7 +264,6 @@ func (mux *Mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // Keys for the node maps. See [node].
 const (
-	wildcardKey = "{}"
 	suffixKey   = "{...}"
 	terminalKey = "{$}"
 )
@@ -260,11 +274,24 @@ const (
 // suffixKey and the terminalKey are the only keys that will point to terminal
 // nodes.
 type node struct {
-	m           map[string]*node
-	wildcardVar string
-	suffixVar   string
-	h           http.Handler
-	pattern     string
+	m         map[string]*node
+	wildcards []string
+	suffixVar string
+	h         http.Handler
+	pattern   string
+}
+
+func (o *node) insertWildcard(x string) {
+	i := sort.SearchStrings(o.wildcards, x)
+	if i < len(o.wildcards) {
+		if o.wildcards[i] == x {
+			return
+		}
+		o.wildcards = append(o.wildcards[:i+1], o.wildcards[i:]...)
+		o.wildcards[i] = x
+	} else {
+		o.wildcards = append(o.wildcards, x)
+	}
 }
 
 var ErrPattern = errors.New("mux: invalid pattern")
@@ -341,13 +368,7 @@ func register(o *node, pattern []string, h http.Handler, origPattern string) (*n
 		}
 		var q *node
 		if o != nil {
-			if q = o.m[wildcardKey]; q != nil {
-				if o.wildcardVar != wcVar {
-					return o, fmt.Errorf(
-						"%w; non-matching wildcard %s",
-						ErrPattern, p)
-				}
-			}
+			q = o.m[p]
 		} else {
 			o = &node{m: make(map[string]*node, 1)}
 		}
@@ -355,8 +376,8 @@ func register(o *node, pattern []string, h http.Handler, origPattern string) (*n
 		if err != nil {
 			return o, err
 		}
-		o.m[wildcardKey] = q
-		o.wildcardVar = wcVar
+		o.m[p] = q
+		o.insertWildcard(p)
 		return o, nil
 	}
 	if !matchStatic(p) {
@@ -390,18 +411,27 @@ func findTerminal(o *node, path []string, m map[string]string) *node {
 			return t
 		}
 	}
-	q = o.m[wildcardKey]
-	if q != nil {
-		if t := findTerminal(q, path[1:], m); t != nil {
-			if m != nil && o.wildcardVar != "" {
-				m[o.wildcardVar] = p
+	for _, key := range o.wildcards {
+		q = o.m[key]
+		if q != nil {
+			if t := findTerminal(q, path[1:], m); t != nil {
+				if m != nil && key != "{}" {
+					// remove the braces around the variable
+					m[key[1:len(key)-1]] = p
+				}
+				return t
 			}
-			return t
 		}
 	}
 	q = o.m[suffixKey]
-	if q != nil && m != nil && o.suffixVar != "" {
+	if q != nil {
+		if m != nil && o.suffixVar != "" {
 			m[o.suffixVar] = strings.Join(path, "/")
+		}
+		return q
+	}
+	if len(path) == 1 && p == "" {
+		q = o.m[terminalKey]
 	}
 	return q
 }

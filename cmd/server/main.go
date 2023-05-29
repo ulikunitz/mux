@@ -3,23 +3,17 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
-	"html"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/ulikunitz/mux"
 )
-
-func handler(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Hello, %q", html.EscapeString(r.URL.Path))
-}
-
-func faviconHandler(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "favicon not supported", http.StatusNotFound)
-}
 
 type logResponseWriter struct {
 	http.ResponseWriter
@@ -48,6 +42,41 @@ func (h *logHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Host, r.URL, float64(d)*1e-6)
 }
 
+type output struct {
+	Host      string
+	Method    string
+	Path      string
+	HandlerID string
+	VarMap    map[string]string
+}
+
+func tcHandler(id string) http.Handler {
+	h := func(w http.ResponseWriter, r *http.Request) {
+		header := w.Header()
+		header.Set("Content-Type", "application/json")
+		out := output{
+			Host:      r.Host,
+			Method:    r.Method,
+			Path:      r.URL.Path,
+			VarMap:    mux.Vars(r),
+			HandlerID: id,
+		}
+		data, err := json.MarshalIndent(&out, "", "  ")
+		if err != nil {
+			http.Error(w, fmt.Sprintf("error %s", err),
+				http.StatusInternalServerError)
+			return
+		}
+
+		_, err = w.Write(data)
+		if err != nil {
+			panic(fmt.Errorf("w.Write(data) error %s", err))
+
+		}
+	}
+	return http.HandlerFunc(h)
+}
+
 func main() {
 	log.SetFlags(log.Ldate |
 		log.Ltime |
@@ -61,9 +90,13 @@ func main() {
 	addr := ":8443"
 	server := fmt.Sprintf("https://%s%s", host, addr)
 
-	mux := http.DefaultServeMux
-	mux.HandleFunc("/favicon.ico", faviconHandler)
-	mux.HandleFunc("/", handler)
+	m := mux.New()
+	m.Handle("GET {host}/item/{itemNr}", tcHandler("1"))
+	m.Handle("POST {host}/item/{itemNr}", tcHandler("2"))
+	m.Handle("GET localhost/item/{itemNr}", tcHandler("3"))
+	m.Handle("{method} /ding/{dingID}/dong/{dongID}", tcHandler("4"))
+	m.Handle("/foo/{foo...}", tcHandler("4"))
+	m.Handle("/{$}", tcHandler("5"))
 
 	tlsConfig := &tls.Config{
 		MinVersion: tls.VersionTLS12,
@@ -81,7 +114,7 @@ func main() {
 	}
 	s := &http.Server{
 		Addr:         addr,
-		Handler:      &logHandler{Handler: http.DefaultServeMux},
+		Handler:      &logHandler{Handler: m},
 		TLSConfig:    tlsConfig,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,

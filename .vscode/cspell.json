@@ -10,7 +10,8 @@
     ],
     "ignoreWords": [
         "mkcert",
-        "objectname"
+        "objectname",
+        "ulikunitz"
     ],
     "import": []
 }
