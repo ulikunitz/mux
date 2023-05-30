@@ -5,9 +5,9 @@ Experimental mux related to https://github.com/golang/go/discussions/60227.
 This is a functional implementation based on the ideas in the above discussion.
 The implementation is not optimized currently, but should work for you.
 
-The documentation can be fount at https://pkg.go.dev/github.com/ulikunitz/mux.
+The documentation can be found at https://pkg.go.dev/github.com/ulikunitz/mux.
 
-# Installation
+## Installation
 
 Import it in your program and run
 ```
