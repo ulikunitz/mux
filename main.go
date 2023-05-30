@@ -29,18 +29,18 @@
 // The other new feature is the support for wildcard variable names, which can
 // replace the method, host or segments in the path component.
 //
-//	m.Handle("{method}  {host}/buckets/{bucketID}/objects/{objectID}")
+//	m.Handle("{method}  {host}/buckets/{bucketID}/objects/{objectID}", h)
 //
 // Suffix wildcards are can be used additionally, which capture the rest of the
 // request path.
 //
-//	m.Handle("/users/{userSpec...}")
+//	m.Handle("/users/{userSpec...}", h)
 //
 // If the wildcard doesn't define a variable name, it acts still as a wildcard
 // but will not capture it. So following calls to Handle are valid.
 //
-//	m.Handle("{} {}/buckets/{bucketID}/objects/{}")
-//	m.Handle("{} {host}/users/{...}")
+//	m.Handle("{} {}/buckets/{bucketID}/objects/{}". h)
+//	m.Handle("{} {host}/users/{...}", h)
 //
 // The multiplexer allows different variables at the same position.
 //
