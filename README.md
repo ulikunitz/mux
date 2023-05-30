@@ -1,4 +1,4 @@
-# Mux - Router for HTTP request
+# Mux - Router for HTTP requests
 
 Experimental mux related to https://github.com/golang/go/discussions/60227.
 
