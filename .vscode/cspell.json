@@ -9,6 +9,7 @@
         "muxes"
     ],
     "ignoreWords": [
+        "httptest",
         "mkcert",
         "objectname",
         "ulikunitz",
