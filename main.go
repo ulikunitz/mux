@@ -1,20 +1,93 @@
-// Package mux implements a mux as proposed in [discussion].
+// Package mux implements a multiplexer for http requests. The multiplexer may
+// replace [http.ServeMux] because it extends the pattern language by HTTP
+// methods and wildcard variables. Those variables can be accessed by the
+// selected HTTP request handlers, saving the handlers from parsing the path
+// again. Those improvements are discussed in a [Go language discussion].
 //
-// The mux is a prototype and experimental. It is not widely tested and
+// The multiplexer is fully functional. It is not widely tested and has not been
 // optimized. Please report any issues you may encounter in [module repo]
 //
-// The mux supports following patterns:
+// A multiplexers can be created by
 //
-//	m.Handle("GET example.org/a/{id}/c", handler1)
-//	m.Handle("PATCH example.org/a/{id}", handler2)
-//	m.Handle("{method} {host}/foo", handler3)
-//	m.Handle("/foo/{remainder...}". handler4)
-//	m.Handle("/simple", handler5)
-//	m.Handle("{host}/{$}", handler6)
+//	m := mux.New()
 //
-// See [Mux.Handle] for more descriptions of the semantics.
+// The multiplexer supports the ServeHTTP method, so it can be used everywhere a
+// [net/http.Handler] can be used.
 //
-// [discussion]: https://github.com/golang/go/discussions/60227
+// The methods [Mux.Handle] and [Mux.HandleFunc] register a [net/http.Handler]
+// or a handler function for a specific pattern. The patterns supported by
+// [net/http.ServeMux] can be used without modification.
+//
+// A new feature is the support for methods, which need to precede host/path
+// pattern by a space.
+//
+//	m.Handle("GET example.org/images/", imagesHandler)
+//
+// The methods GET, HEAD, POST, PATCH, PUT, CONNECT, OPTIONS and TRACE are
+// supported.
+//
+// The other new feature is the support for wildcard variable names, which can
+// replace the method, host or segments in the path component.
+//
+//	m.Handle("{method}  {host}/buckets/{bucketID}/objects/{objectID}")
+//
+// Suffix wildcards are can be used additionally, which capture the rest of the
+// request path.
+//
+//	m.Handle("/users/{userSpec...}")
+//
+// If the wildcard doesn't define a variable name, it acts still as a wildcard
+// but will not capture it. So following calls to Handle are valid.
+//
+//	m.Handle("{} {}/buckets/{bucketID}/objects/{}")
+//	m.Handle("{} {host}/users/{...}")
+//
+// The multiplexer allows different variables at the same position.
+//
+//	m.Handle("/buckets/{bucket2ID}/objects/{objectID}", h2o)
+//	m.Handle("/buckets/{bucket1ID}/objects/{objectID}", h1o)
+//	m.Handle("/buckets/{bucket2ID}/meta/", h2m)
+//
+// However the variables will be ordered in lexicographically order. The
+// multiplexer will route the a request with path /buckets/1/objects/1 always to
+// the handler h1o. The handler h2o will not be reachable. However a request
+// with path /buckets/1/meta/green will be routed to h2m.
+// 
+// The order of the pattern resolution is independent of the order of the Handle
+// calls. A consequence is that redundant patterns lead to panics, if they would
+// simply overwrite the handlers the sequence of the callers would influence the
+// resolution.
+//
+// The multiplexer doesn't support two suffix wildcards with different
+// variables. Following calls will lead to a panic of the second call.
+//
+//	m.Handle("/users/{userSpec...}", h1)
+//	m.Handle("/users/{uSpec...}", h2)
+//
+// The multiplexer keeps the redirect logic of a  path /images to
+// /images/ if only the second pattern has been registered. This is also
+// valid for suffix wildcards as in /images/{imageSpec...}.
+//
+// The multiplexer supports a special marker {$}. The pattern registered with
+//
+//	m.Handle("/{$}", h1)
+//
+// will only resolve calls to a path with a single slash because
+//
+//	m.Handle("/", h2)
+//
+// will resolve to all requests unless other patterns have been registered. The
+// multiplexer always prefers the most specific pattern that matches.
+//
+// The handler can access the wildcard variables by calling the [Vars] function
+// on the provided request value. The returned map is always initialized, if no
+// variables have been matched the map will be empty.
+//
+//	vmap := mux.Vars(request)
+//	log.Printf("bucketID: %s", vmap["bucketID"])
+//	log.Printf("objectID: %s", vmap["objectID"])
+//
+// [Go language discussion]: https://github.com/golang/go/discussions/60227
 // [module repo]: https://github.com/ulikunitz/mux
 package mux
 
@@ -35,12 +108,12 @@ import (
 // ctxKey is a package specific type for context keys.
 type ctxKey int
 
-// varMapLey is the context key for variable map values.
+// varMapKey is the context key for variable map values.
 const (
 	varMapKey ctxKey = iota
 )
 
-// Vars retrieves the variable segment map from the request. The function
+// Vars retrieves the wildcard variable map from the request. The function
 // returns always an initialized map, which may be empty.
 func Vars(r *http.Request) map[string]string {
 	ctx := r.Context()
@@ -61,14 +134,14 @@ func withVarMap(r *http.Request, m map[string]string) *http.Request {
 	return r.WithContext(ctx)
 }
 
-// Mux is the the mux. We are storing all handlers in a tree, with the first
-// level for the hosts, second level for the methods and then followed by the path.
+// Mux is the type for the multiplexer. It holds a tree resolving all patterns
+// provided.
 type Mux struct {
 	mutex sync.RWMutex
 	root  *node
 }
 
-// New creates a new Mux instance.
+// New creates a new Mux instance. All instances can be used independently.
 func New() *Mux {
 	return &Mux{}
 }
@@ -123,30 +196,10 @@ func convertPattern(p string) (s []string, err error) {
 	return s, nil
 }
 
-// Handle registers the provided handler for the given pattern.
-//
-// Examples are:
-//
-//	m.Handle("GET example.org/a/{id}/c", handler1)
-//	m.Handle("{method} {host}/foo", handler2)
-//	m.Handle("/simple", handler3)
-//	m.Handle("{host}/{$}", handler4)
-//
-// Following patterns will be supported:
-//
-//	m.Handle("/a/{a2}/a", h2a)
-//	m.Handle("/a/{a2}/b", h2b)
-//	m.Handle("/a/{a1}/a", h1)
-//
-// A request /a/foo/a will always resolve to h1, because a1 is lexicographic
-// before a2. The request /a/foo/b however will resolve to h2b, because b cannot
-// be satisfied by the wildcard {a1}.
-//
-// Note we are not supporting multiple suffix variables at the same position. So
-// following code leads to a panic in the second call.
-//
-//	m.Handle("/b/{b2...}", hb2)
-//	m.Handle("/b/{b1...}", hb1)
+// Handle registers the provided handler for the given pattern. The function
+// might panic if the patterns contain errors or are redundant. The sequence of
+// the Handle calls has no influence on the pattern resolution. (Note that this
+// condition would be violated, if redundant patterns would not cause a panic.)
 func (mux *Mux) Handle(pattern string, handler http.Handler) {
 	p, err := convertPattern(pattern)
 	if err != nil {
@@ -166,7 +219,7 @@ func (mux *Mux) Handle(pattern string, handler http.Handler) {
 }
 
 // HandleFunc registers the handler function handler with the given pattern. It
-// calls [Handle] and supports the semantics for the pattern.
+// calls [Mux.Handle] and supports the semantics for the pattern.
 func (mux *Mux) HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request)) {
 	mux.Handle(pattern, http.HandlerFunc(handler))
 }
@@ -373,7 +426,9 @@ func (o *node) insertWildcard(x string) {
 	}
 }
 
-// ErrPattern indicates that an invalid pattern has been provided.
+// ErrPattern indicates that an invalid pattern has been provided. The errors
+// provided by the panics of the [Mux.Handle] and [Mux.HandleFunc] methods wrap
+// this error.
 var ErrPattern = errors.New("mux: invalid pattern")
 
 // regular expressions for wild cards and static segments.

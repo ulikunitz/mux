@@ -11,7 +11,8 @@
     "ignoreWords": [
         "mkcert",
         "objectname",
-        "ulikunitz"
+        "ulikunitz",
+        "vmap"
     ],
     "import": []
 }

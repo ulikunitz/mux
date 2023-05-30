@@ -95,7 +95,6 @@ func TestMux(t *testing.T) {
 
 func Example() {
 	type out struct {
-		Host      string
 		Method    string
 		Path      string
 		HandlerID string
@@ -106,7 +105,6 @@ func Example() {
 		header := w.Header()
 		header.Set("Content-Type", "application/json")
 		out := out{
-			Host:   r.Host,
 			Method: r.Method,
 			Path:   r.URL.Path,
 			VarMap: mux.Vars(r),
@@ -126,31 +124,32 @@ func Example() {
 	}
 
 	m := mux.New()
-	m.HandleFunc("{method} {host}/item/{itemNr}", h)
+	m.HandleFunc("{method} /item/{itemNr}", h)
 	m.HandleFunc("/foo/{remainder...}", h)
 
-	r, err := http.NewRequest("GET", "https://example.org/item/1", nil)
-	if err != nil {
-		log.Fatalf("http.NewRequest error %s", err)
-	}
+	ts := httptest.NewTLSServer(m)
+	defer ts.Close()
 
-	w := httptest.NewRecorder()
-	m.ServeHTTP(w, r)
-	resp := w.Result()
+	client := ts.Client()
+	url := ts.URL + "/item/1"
+	resp, err := client.Get(url)
+	if err != nil {
+		log.Fatalf("client.Get(%q) error %s", url, err)
+	}
+	defer resp.Body.Close()
+
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Fatalf("io.ReadAll error %s", err)
+		log.Fatalf("io.ReadAll(resp.Body) error %s", err)
 	}
 
 	fmt.Printf("%s", data)
 	// Output:
 	// {
-	//   "Host": "example.org",
 	//   "Method": "GET",
 	//   "Path": "/item/1",
 	//   "HandlerID": "",
 	//   "VarMap": {
-	//     "host": "example.org",
 	//     "itemNr": "1",
 	//     "method": "GET"
 	//   }
