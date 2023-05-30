@@ -6,11 +6,11 @@
 // The mux supports following patterns:
 //
 //	m.Handle("GET example.org/a/{id}/c", handler1)
-//	m.Handle("PATCH example.org/a/{id}")
-//	m.Handle("{method} {host}/foo", handler2)
-//	m.Handle("/foo/{remainder...}")
-//	m.Handle("/simple", handler3)
-//	m.Handle("{host}/{$}")
+//	m.Handle("PATCH example.org/a/{id}", handler2)
+//	m.Handle("{method} {host}/foo", handler3)
+//	m.Handle("/foo/{remainder...}". handler4)
+//	m.Handle("/simple", handler5)
+//	m.Handle("{host}/{$}", handler6)
 //
 // See [Mux.Handle] for more descriptions of the semantics.
 //
@@ -130,7 +130,7 @@ func convertPattern(p string) (s []string, err error) {
 //	m.Handle("GET example.org/a/{id}/c", handler1)
 //	m.Handle("{method} {host}/foo", handler2)
 //	m.Handle("/simple", handler3)
-//	m.Handle("{host}/{$}")
+//	m.Handle("{host}/{$}", handler4)
 //
 // Following patterns will be supported:
 //
@@ -145,9 +145,8 @@ func convertPattern(p string) (s []string, err error) {
 // Note we are not supporting multiple suffix variables at the same position. So
 // following code leads to a panic in the second call.
 //
-//	m.Handle("/b/{b2...}")
-//	m.Handle("/b/{b1...}")
-//
+//	m.Handle("/b/{b2...}", hb2)
+//	m.Handle("/b/{b1...}", hb1)
 func (mux *Mux) Handle(pattern string, handler http.Handler) {
 	p, err := convertPattern(pattern)
 	if err != nil {
