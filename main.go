@@ -62,7 +62,7 @@
 // variables. Following calls will lead to a panic of the second call.
 //
 //	m.Handle("/users/{userSpec...}", h1)
-//	m.Handle("/users/{uSpec...}", h2)
+//	m.Handle("/users/{uSpec...}", h2) // Call will panic!
 //
 // The multiplexer keeps the redirect logic of a  path /images to
 // /images/ if only the second pattern has been registered. This is also
