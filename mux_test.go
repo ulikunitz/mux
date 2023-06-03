@@ -1,6 +1,7 @@
 package mux_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
+	"strings"
 	"testing"
 
 	"github.com/ulikunitz/mux"
@@ -48,7 +50,7 @@ func tcHandler(id string) http.Handler {
 	return http.HandlerFunc(h)
 }
 
-func TestMux(t *testing.T) {
+func TestMuxOld(t *testing.T) {
 	m := mux.New()
 	m.Handle("GET {host}/item/{itemNr}", tcHandler("1"))
 	m.Handle("POST {host}/item/{itemNr}", tcHandler("2"))
@@ -154,4 +156,160 @@ func Example() {
 	//     "method": "GET"
 	//   }
 	// }
+}
+
+func TestMux(t *testing.T) {
+	type output struct {
+		Host    string
+		Method  string
+		Path    string
+		Pattern string
+		VarMap  map[string]string
+	}
+	type testCase struct {
+		request string
+		status  int
+		output  string
+	}
+	type testSetup struct {
+		patterns  []string
+		testCases []testCase
+	}
+
+	handler := func(pattern string) http.Handler {
+		h := func(w http.ResponseWriter, r *http.Request) {
+			header := w.Header()
+			header.Set("Content-Type", "application/json")
+			out := output{
+				Host:    r.Host,
+				Method:  r.Method,
+				Path:    r.URL.Path,
+				Pattern: pattern,
+				VarMap:  mux.Vars(r),
+			}
+			data, err := json.MarshalIndent(&out, "", "  ")
+			if err != nil {
+				http.Error(w, fmt.Sprintf("error %s", err),
+					http.StatusInternalServerError)
+				return
+			}
+
+			_, err = w.Write(data)
+			if err != nil {
+				panic(fmt.Errorf("w.Write(data) error %s", err))
+
+			}
+		}
+		return http.HandlerFunc(h)
+	}
+
+	tests := []testSetup{
+		{
+			patterns: []string{
+				"GET /",
+				"GET /item/{itemID}",
+			},
+			testCases: []testCase{
+					{
+						request: "GET https://example.org/",
+						status:  200,
+						output: `{
+							"Host": "example.org",
+							"Method": "GET",
+							"Path": "/",
+							"Pattern": "GET /",
+							"VarMap": {}
+						}`,
+					},
+					{
+						request: "GET https://example.org/foo/bar",
+						status:  200,
+						output: `{
+							"Host": "example.org",
+							"Method": "GET",
+							"Path": "/foo/bar",
+							"Pattern": "GET /",
+							"VarMap": {}
+						}`,
+					},
+				{
+					request: "GET https://example.org/item/1",
+					status:  200,
+					output: `{
+						"Host": "example.org",
+						"Method": "GET",
+						"Path": "/item/1",
+						"Pattern": "GET /item/{itemID}",
+						"VarMap": {
+							"itemID": "1"
+						}
+					}`,
+				},
+			},
+		},
+	}
+
+	for i, ts := range tests {
+		ts := ts
+		t.Run(fmt.Sprintf("s=%d", i+1), func(t *testing.T) {
+			m := mux.New()
+			for _, p := range ts.patterns {
+				m.Handle(p, handler(p))
+			}
+
+			for _, tc := range ts.testCases {
+				method, url, ok := strings.Cut(tc.request, " ")
+				if !ok {
+					t.Errorf("request %q invalid",
+						tc.request)
+					continue
+				}
+				r, err := http.NewRequest(method, url, nil)
+				if err != nil {
+					t.Errorf(
+						"http.NewRequest(%q, %q, %v) error %s",
+						method, url, nil, err)
+					continue
+				}
+
+				w := httptest.NewRecorder()
+				m.ServeHTTP(w, r)
+
+				resp := w.Result()
+
+				if resp.StatusCode != tc.status {
+					t.Errorf("got status %d; want %d",
+						resp.StatusCode, tc.status)
+					continue
+				}
+				data, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Errorf("DumpResponse error %s", err)
+					continue
+				}
+				if err = resp.Body.Close(); err != nil {
+					t.Errorf("resp.Body.Close() error %s",
+						err)
+				}
+
+				var buf bytes.Buffer
+				err = json.Indent(&buf, []byte(tc.output), "",
+					"  ")
+				if err != nil {
+					t.Errorf(
+						"invalid expected output %q; error %s",
+						tc.output, err)
+				}
+
+				want := buf.String()
+				got := string(data)
+				if got != want {
+					t.Logf("GOT\n%s", got)
+					t.Logf("WANT\n%s", want)
+					t.Errorf("### unexpected output")
+					continue
+				}
+			}
+		})
+	}
 }
