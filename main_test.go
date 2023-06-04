@@ -47,3 +47,12 @@ func TestHandle(t *testing.T) {
 		}
 	}
 }
+
+func TestNewRegexpSet(t *testing.T) {
+	/* r := */ newRegexpSet()
+	/*
+		t.Logf("method: %s", r.method)
+		t.Logf("host: %s", r.host)
+		t.Logf("segment: %s", r.segment)
+	*/
+}

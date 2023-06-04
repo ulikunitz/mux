@@ -12,6 +12,7 @@
         "httptest",
         "mkcert",
         "objectname",
+        "pchar",
         "ulikunitz",
         "vmap"
     ],

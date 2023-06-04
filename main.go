@@ -52,7 +52,7 @@
 // multiplexer will route the a request with path /buckets/1/objects/1 always to
 // the handler h1o. The handler h2o will not be reachable. However a request
 // with path /buckets/1/meta/green will be routed to h2m.
-// 
+//
 // The order of the pattern resolution is independent of the order of the Handle
 // calls. A consequence is that redundant patterns lead to panics, if they would
 // simply overwrite the handlers the sequence of the callers would influence the
@@ -146,9 +146,65 @@ func New() *Mux {
 	return &Mux{}
 }
 
-// convertPatterns converts a pattern string into a pattern slice. It checks for
+type regexpSet struct {
+	method  *regexp.Regexp
+	host    *regexp.Regexp
+	segment *regexp.Regexp
+}
+
+func newRegexpSet() *regexpSet {
+	r := new(regexpSet)
+
+	const (
+		wildcard   = `(?:\{(?P<wc>[_\pL][_\pL\p{Nd}]*)?(?P<suffix>\.\.\.)?\})`
+		method     = `(?:GET|HEAD|POST|PUT|PATCH|CONNECT|OPTIONS|TRACE)`
+		wcm        = `^(?:` + wildcard + `|` + method + `)$`
+		unreserved = `[-A-Za-z0-9._~]`
+		pctEncoded = `(?:%[A-Fa-f0-9]{2})`
+		subDelims  = `[!$&'()*+,;=]`
+		regName    = `(?:(?:` + unreserved + `|` + pctEncoded + `|` +
+			subDelims + `)*)`
+		decOctet    = `(?:\d|[1-9]\d|1\d\d|2[0-4][0-9]|25[0-5])`
+		ipv4address = `(?:` + decOctet + `\.` + decOctet + `\.` +
+			decOctet + `\.` + decOctet + `)`
+		h16         = `(?:[0-9a-fA-F]{1,4})`
+		h16c        = `(?:` + h16 + `\:)`
+		ls32        = `(?:` + h16 + `\:` + h16 + `|` + ipv4address + `)`
+		ipv6address = `(?:` + h16c + `{6}` + ls32 + `|` +
+			`\:\:` + h16c + `{5}` + ls32 + `|` +
+			h16 + `?\:\:` + h16c + `{4}` + ls32 + `|` +
+			`(?:` + h16c + `?` + h16 + `)?\:\:` + h16c + `{3}` + ls32 + `|` +
+			`(?:` + h16c + `{,2}` + h16 + `)?\:\:` + h16c + `{2}` + ls32 + `|` +
+			`(?:` + h16c + `{,3}` + h16 + `)?\:\:` + h16c + ls32 + `|` +
+			`(?:` + h16c + `{,4}` + h16 + `)?\:\:` + ls32 + `|` +
+			`(?:` + h16c + `{,5}` + h16 + `)?\:\:` + h16 + `|` +
+			`(?:` + h16c + `{,6}` + h16 + `)?\:\:)`
+		ipLiteral = `(?:\[` + ipv6address + `\])`
+		host      = `(?:` + ipLiteral + `|` + ipv4address + `|` + regName + `)`
+		wch       = `^(?:` + wildcard + `|` + host + `)$`
+		pchar     = `(?:` + unreserved + `|` + pctEncoded + `|` +
+			subDelims + `|` + `[:@])`
+		segment = `(?:` + pchar + `*)`
+		wcs     = `^(?:` + wildcard + `|` + segment + `)$`
+	)
+
+	r.method = regexp.MustCompile(wcm)
+	r.host = regexp.MustCompile(wch)
+	r.segment = regexp.MustCompile(wcs)
+	return r
+}
+
+var (
+	reOnce  sync.Once
+	regexps *regexpSet
+)
+
+// parsePatterns converts a pattern string into a pattern slice. It checks for
 // correct method names.
-func convertPattern(p string) (s []string, err error) {
+func parsePattern(p string) (s []string, err error) {
+	reOnce.Do(func() {
+		regexps = newRegexpSet()
+	})
 	var (
 		method string
 	)
@@ -161,32 +217,48 @@ func convertPattern(p string) (s []string, err error) {
 	if method == "" {
 		method = "{}"
 	}
-	if method[0] == '{' {
-		_, suffix, ok := matchWildcard(method)
-		if !ok || suffix {
-			return nil, fmt.Errorf("%w; invalid method wildcard %s",
-				ErrPattern, method)
-		}
-	} else {
-		switch method {
-		case http.MethodGet:
-		case http.MethodHead:
-		case http.MethodPost:
-		case http.MethodPut:
-		case http.MethodPatch:
-		case http.MethodConnect:
-		case http.MethodOptions:
-		case http.MethodTrace:
-		default:
-			return nil, fmt.Errorf("%w; invalid method %s",
-				ErrPattern, method)
-		}
+	m := regexps.method.FindStringSubmatch(method)
+	if m == nil {
+		return nil, fmt.Errorf("%w; invalid method %q", ErrPattern,
+			method)
+	}
+	if m[2] != "" {
+		return nil, fmt.Errorf("%w; method %q must not have a suffix",
+			ErrPattern, method)
 	}
 
 	s = strings.Split(p, "/")
 	if s[0] == "" {
 		s[0] = "{}"
 	}
+	host := s[0]
+	m = regexps.host.FindStringSubmatch(host)
+	if m == nil {
+		return nil, fmt.Errorf("%w; invalid host %q", ErrPattern,
+			host)
+	}
+	if m[2] != "" {
+		return nil, fmt.Errorf("%w; host %q must not have a suffix",
+			ErrPattern, host)
+	}
+
+	q := s[1:]
+	for i, seg := range q {
+		if i == len(q)-1 && seg == "{$}" {
+			break
+		}
+		m = regexps.segment.FindStringSubmatch(seg)
+		if m == nil {
+			return nil, fmt.Errorf("%w; invalid segment %q",
+				ErrPattern, seg)
+		}
+		if i+1 < len(q) && m[2] != "" {
+			return nil, fmt.Errorf(
+				"%w; no suffix before end of path (%q)",
+				ErrPattern, seg)
+		}
+	}
+
 	if 1 < len(s) {
 		s = append(s[:2], s[1:]...)
 		s[1] = method
@@ -201,7 +273,7 @@ func convertPattern(p string) (s []string, err error) {
 // the Handle calls has no influence on the pattern resolution. (Note that this
 // condition would be violated, if redundant patterns would not cause a panic.)
 func (mux *Mux) Handle(pattern string, handler http.Handler) {
-	p, err := convertPattern(pattern)
+	p, err := parsePattern(pattern)
 	if err != nil {
 		err = fmt.Errorf("%w; pattern=%q", err, pattern)
 		panic(err)
@@ -374,7 +446,8 @@ func (mux *Mux) HandlerReq(r *http.Request) (h http.Handler, pattern string, s *
 	if path != r.URL.Path {
 		_, pattern, _ = mux.handler(r, host, method, path)
 		u := &url.URL{Path: path, RawQuery: r.URL.RawQuery}
-		return http.RedirectHandler(u.String(), http.StatusMovedPermanently), pattern, r
+		return http.RedirectHandler(u.String(),
+			http.StatusMovedPermanently), pattern, r
 	}
 
 	return mux.handler(r, host, method, r.URL.Path)
@@ -431,26 +504,22 @@ func (o *node) insertWildcard(x string) {
 // this error.
 var ErrPattern = errors.New("mux: invalid pattern")
 
-// regular expressions for wild cards and static segments.
-var (
-	wcRegexp     = regexp.MustCompile(`^\{([_\pL][_\pL\p{Nd}]*)?(\.\.\.)?\}$`)
-	staticRegexp = regexp.MustCompile(
-		`^(?:%[0-9a-fA-F]{2}|[-:@!$&'()*+,;=A-Za-z0-9._~])*$`)
-)
-
 // matchWildcard checks whether the string is a wildcard. The function extracts
 // the wildcard, checks whether it is a suffix (e.g. {foo...}).
 func matchWildcard(s string) (wc string, suffix bool, ok bool) {
-	m := wcRegexp.FindStringSubmatch(s)
-	if m == nil {
+	if len(s) < 2 {
 		return "", false, false
 	}
-	return m[1], m[2] == "...", true
-}
-
-// matchStatic checks whether s is a static segment.
-func matchStatic(s string) bool {
-	return staticRegexp.MatchString(s)
+	j := len(s) - 1
+	if s[0] != '{' || s[j] != '}' {
+		return "", false, false
+	}
+	wc = s[1:j]
+	if j = len(wc) - 3; j >= 0 && wc[j:] == "..." {
+		suffix = true
+		wc = wc[:j]
+	}
+	return wc, suffix, true
 }
 
 // register registers the handler and original pattern under node o using the
@@ -474,7 +543,7 @@ func register(o *node, pattern []string, h http.Handler, origPattern string) (*n
 	}
 	p := pattern[0]
 	if p == "" && len(pattern) == 1 {
-		p = "{...}"
+		p = suffixKey
 	}
 	if len(p) > 0 && p[0] == '{' {
 		if p == "{$}" {
@@ -520,9 +589,6 @@ func register(o *node, pattern []string, h http.Handler, origPattern string) (*n
 		o.m[p] = q
 		o.insertWildcard(p)
 		return o, nil
-	}
-	if !matchStatic(p) {
-		return o, fmt.Errorf("%w; segment %q invalid", ErrPattern, p)
 	}
 	var q *node
 	if o != nil {
