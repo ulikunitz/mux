@@ -210,28 +210,28 @@ func TestMux(t *testing.T) {
 				"GET /item/{itemID}",
 			},
 			testCases: []testCase{
-					{
-						request: "GET https://example.org/",
-						status:  200,
-						output: `{
+				{
+					request: "GET https://example.org/",
+					status:  200,
+					output: `{
 							"Host": "example.org",
 							"Method": "GET",
 							"Path": "/",
 							"Pattern": "GET /",
 							"VarMap": {}
 						}`,
-					},
-					{
-						request: "GET https://example.org/foo/bar",
-						status:  200,
-						output: `{
+				},
+				{
+					request: "GET https://example.org/foo/bar",
+					status:  200,
+					output: `{
 							"Host": "example.org",
 							"Method": "GET",
 							"Path": "/foo/bar",
 							"Pattern": "GET /",
 							"VarMap": {}
 						}`,
-					},
+				},
 				{
 					request: "GET https://example.org/item/1",
 					status:  200,
