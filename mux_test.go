@@ -247,6 +247,48 @@ func TestMux(t *testing.T) {
 				},
 			},
 		},
+		{
+			patterns: []string{
+				"GET /a/b",
+				"GET /a/{wc}",
+			},
+			testCases: []testCase{
+				{
+					request: "GET https://example.org/a/b",
+					status:  200,
+					output: `{
+						"Host": "example.org",
+						"Method": "GET",
+						"Path": "/a/b",
+						"Pattern": "GET /a/b",
+						"VarMap": {}
+					}`,
+				},
+				{
+					request: "GET https://example.org/a/a",
+					status:  200,
+					output: `{
+						"Host": "example.org",
+						"Method": "GET",
+						"Path": "/a/a",
+						"Pattern": "GET /a/{wc}",
+						"VarMap": {
+						  "wc": "a"
+						}
+					}`,
+				},
+				{
+					request: "GET https://example.org/a/a/",
+					status:  404,
+					output:  "404 page not found\n",
+				},
+				{
+					request: "GET https://example.org/a/b/",
+					status:  404,
+					output:  "404 page not found\n",
+				},
+			},
+		},
 	}
 
 	for i, ts := range tests {
@@ -295,13 +337,13 @@ func TestMux(t *testing.T) {
 				var buf bytes.Buffer
 				err = json.Indent(&buf, []byte(tc.output), "",
 					"  ")
+				var want string
 				if err != nil {
-					t.Errorf(
-						"invalid expected output %q; error %s",
-						tc.output, err)
+					want = tc.output
+				} else {
+					want = buf.String()
 				}
 
-				want := buf.String()
 				got := string(data)
 				if got != want {
 					t.Logf("GOT\n%s", got)
