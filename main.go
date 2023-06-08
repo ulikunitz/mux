@@ -592,7 +592,7 @@ func register(o *node, pattern []string, h http.Handler, origPattern string) (*n
 			q, err := register(q, nil, h, origPattern)
 			if err != nil {
 				return o, err
-			}	
+			}
 			o.m[""] = q
 			return o, nil
 		}
