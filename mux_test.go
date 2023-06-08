@@ -97,10 +97,9 @@ func TestMuxOld(t *testing.T) {
 
 func Example() {
 	type out struct {
-		Method    string
-		Path      string
-		HandlerID string
-		VarMap    map[string]string
+		Method string
+		Path   string
+		VarMap map[string]string
 	}
 
 	h := func(w http.ResponseWriter, r *http.Request) {
@@ -150,7 +149,6 @@ func Example() {
 	// {
 	//   "Method": "GET",
 	//   "Path": "/item/1",
-	//   "HandlerID": "",
 	//   "VarMap": {
 	//     "itemNr": "1",
 	//     "method": "GET"
