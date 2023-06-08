@@ -9,10 +9,12 @@
         "muxes"
     ],
     "ignoreWords": [
+        "ferr",
         "httptest",
         "mkcert",
         "objectname",
         "pchar",
+        "rerr",
         "ulikunitz",
         "vmap"
     ],

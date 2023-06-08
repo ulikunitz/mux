@@ -212,36 +212,36 @@ func TestMux(t *testing.T) {
 					request: "GET https://example.org/",
 					status:  200,
 					output: `{
-							"Host": "example.org",
-							"Method": "GET",
-							"Path": "/",
-							"Pattern": "GET /",
-							"VarMap": {}
-						}`,
+								"Host": "example.org",
+								"Method": "GET",
+								"Path": "/",
+								"Pattern": "GET /",
+								"VarMap": {}
+							}`,
 				},
 				{
 					request: "GET https://example.org/foo/bar",
 					status:  200,
 					output: `{
-							"Host": "example.org",
-							"Method": "GET",
-							"Path": "/foo/bar",
-							"Pattern": "GET /",
-							"VarMap": {}
-						}`,
+								"Host": "example.org",
+								"Method": "GET",
+								"Path": "/foo/bar",
+								"Pattern": "GET /",
+								"VarMap": {}
+							}`,
 				},
 				{
 					request: "GET https://example.org/item/1",
 					status:  200,
 					output: `{
-						"Host": "example.org",
-						"Method": "GET",
-						"Path": "/item/1",
-						"Pattern": "GET /item/{itemID}",
-						"VarMap": {
-							"itemID": "1"
-						}
-					}`,
+							"Host": "example.org",
+							"Method": "GET",
+							"Path": "/item/1",
+							"Pattern": "GET /item/{itemID}",
+							"VarMap": {
+								"itemID": "1"
+							}
+						}`,
 				},
 			},
 		},
@@ -255,25 +255,25 @@ func TestMux(t *testing.T) {
 					request: "GET https://example.org/a/b",
 					status:  200,
 					output: `{
-						"Host": "example.org",
-						"Method": "GET",
-						"Path": "/a/b",
-						"Pattern": "GET /a/b",
-						"VarMap": {}
-					}`,
+							"Host": "example.org",
+							"Method": "GET",
+							"Path": "/a/b",
+							"Pattern": "GET /a/b",
+							"VarMap": {}
+						}`,
 				},
 				{
 					request: "GET https://example.org/a/a",
 					status:  200,
 					output: `{
-						"Host": "example.org",
-						"Method": "GET",
-						"Path": "/a/a",
-						"Pattern": "GET /a/{wc}",
-						"VarMap": {
-						  "wc": "a"
-						}
-					}`,
+							"Host": "example.org",
+							"Method": "GET",
+							"Path": "/a/a",
+							"Pattern": "GET /a/{wc}",
+							"VarMap": {
+							  "wc": "a"
+							}
+						}`,
 				},
 				{
 					request: "GET https://example.org/a/a/",
@@ -284,6 +284,36 @@ func TestMux(t *testing.T) {
 					request: "GET https://example.org/a/b/",
 					status:  404,
 					output:  "404 page not found\n",
+				},
+			},
+		},
+		{
+			patterns: []string{
+				"POST /objects/{id}",
+			},
+			testCases: []testCase{
+				{
+					request: "POST https://example.org/objects/1",
+					status:  200,
+					output: `{
+							"Host": "example.org",
+							"Method": "POST",
+							"Path": "/objects/1",
+							"Pattern": "POST /objects/{id}",
+							"VarMap": {
+							  "id": "1"
+							}
+						}`,
+				},
+				{
+					request: "POST https://example.org/object/1",
+					status:  404,
+					output:  "404 page not found\n",
+				},
+				{
+					request: "GET https://example.org/objects/1",
+					status:  405,
+					output:  "405 method not allowed\n",
 				},
 			},
 		},
@@ -344,8 +374,8 @@ func TestMux(t *testing.T) {
 
 				got := string(data)
 				if got != want {
-					t.Logf("GOT\n%s", got)
-					t.Logf("WANT\n%s", want)
+					t.Logf("GOT  %q", got)
+					t.Logf("WANT %q", want)
 					t.Errorf("### unexpected output")
 					continue
 				}

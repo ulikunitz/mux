@@ -7,7 +7,7 @@
 // The multiplexer is fully functional. It is not widely tested and has not been
 // optimized. Please report any issues you may encounter in [module repo]
 //
-// A multiplexers can be created by
+// A multiplexer will be created by
 //
 //	m := mux.New()
 //
@@ -86,6 +86,9 @@
 //	vmap := mux.Vars(request)
 //	log.Printf("bucketID: %s", vmap["bucketID"])
 //	log.Printf("objectID: %s", vmap["objectID"])
+//
+// If the path cannot be found the multiplexer returns 404 page not found. If
+// the method is unsupported, the status returned is 405 method not allowed.
 //
 // [Go language discussion]: https://github.com/golang/go/discussions/60227
 // [module repo]: https://github.com/ulikunitz/mux
@@ -201,29 +204,26 @@ var (
 
 // parsePatterns converts a pattern string into a pattern slice. It checks for
 // correct method names.
-func parsePattern(p string) (s []string, err error) {
+func parsePattern(p string) (s []string, method string, err error) {
 	reOnce.Do(func() {
 		regexps = newRegexpSet()
 	})
-	var (
-		method string
-	)
 	method, r, ok := strings.Cut(p, " ")
 	if ok {
 		p = strings.TrimLeft(r, " ")
+		if method == "" {
+			method = "{}"
+		}
 	} else {
-		method = ""
-	}
-	if method == "" {
 		method = "{}"
 	}
 	m := regexps.method.FindStringSubmatch(method)
 	if m == nil {
-		return nil, fmt.Errorf("%w; invalid method %q", ErrPattern,
+		return nil, "", fmt.Errorf("%w; invalid method %q", ErrPattern,
 			method)
 	}
 	if m[2] != "" {
-		return nil, fmt.Errorf("%w; method %q must not have a suffix",
+		return nil, "", fmt.Errorf("%w; method %q must not have a suffix",
 			ErrPattern, method)
 	}
 
@@ -234,11 +234,11 @@ func parsePattern(p string) (s []string, err error) {
 	host := s[0]
 	m = regexps.host.FindStringSubmatch(host)
 	if m == nil {
-		return nil, fmt.Errorf("%w; invalid host %q", ErrPattern,
+		return nil, "", fmt.Errorf("%w; invalid host %q", ErrPattern,
 			host)
 	}
 	if m[2] != "" {
-		return nil, fmt.Errorf("%w; host %q must not have a suffix",
+		return nil, "", fmt.Errorf("%w; host %q must not have a suffix",
 			ErrPattern, host)
 	}
 
@@ -249,23 +249,17 @@ func parsePattern(p string) (s []string, err error) {
 		}
 		m = regexps.segment.FindStringSubmatch(seg)
 		if m == nil {
-			return nil, fmt.Errorf("%w; invalid segment %q",
+			return nil, "", fmt.Errorf("%w; invalid segment %q",
 				ErrPattern, seg)
 		}
 		if i+1 < len(q) && m[2] != "" {
-			return nil, fmt.Errorf(
+			return nil, "", fmt.Errorf(
 				"%w; no suffix before end of path (%q)",
 				ErrPattern, seg)
 		}
 	}
 
-	if 1 < len(s) {
-		s = append(s[:2], s[1:]...)
-		s[1] = method
-	} else {
-		s = append(s, method)
-	}
-	return s, nil
+	return s, method, nil
 }
 
 // Handle registers the provided handler for the given pattern. The function
@@ -273,7 +267,10 @@ func parsePattern(p string) (s []string, err error) {
 // the Handle calls has no influence on the pattern resolution. (Note that this
 // condition would be violated, if redundant patterns would not cause a panic.)
 func (mux *Mux) Handle(pattern string, handler http.Handler) {
-	p, err := parsePattern(pattern)
+	if handler == nil {
+		panic(fmt.Errorf("mux: nil handler is not supported"))
+	}
+	p, method, err := parsePattern(pattern)
 	if err != nil {
 		err = fmt.Errorf("%w; pattern=%q", err, pattern)
 		panic(err)
@@ -282,7 +279,7 @@ func (mux *Mux) Handle(pattern string, handler http.Handler) {
 	mux.mutex.Lock()
 	defer mux.mutex.Unlock()
 
-	q, err := register(mux.root, p, handler, pattern)
+	q, err := register(mux.root, p, method, result{h: handler, pattern: pattern})
 	if err != nil {
 		err = fmt.Errorf("%w; pattern=%q", err, pattern)
 		panic(err)
@@ -294,16 +291,6 @@ func (mux *Mux) Handle(pattern string, handler http.Handler) {
 // calls [Mux.Handle] and supports the semantics for the pattern.
 func (mux *Mux) HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request)) {
 	mux.Handle(pattern, http.HandlerFunc(handler))
-}
-
-// searchPath converts host, method and path to a search path for the mux tree.
-func searchPath(host, method, path string) string {
-	sb := new(strings.Builder)
-	sb.WriteString(host)
-	sb.WriteByte('/')
-	sb.WriteString(method)
-	sb.WriteString(path)
-	return sb.String()
 }
 
 // _shouldRedirect returns whether there is a  direct terminal key (t=true) or
@@ -351,31 +338,52 @@ func _shouldRedirect(o *node, path string) (t, s bool) {
 // shouldRedirect checks whether there should be a redirection for the given
 // host, method and path.
 func (mux *Mux) shouldRedirect(host, method, path string) bool {
-	p := searchPath(host, method, path)
-
 	mux.mutex.RLock()
 	defer mux.mutex.RUnlock()
-	t, s := _shouldRedirect(mux.root, p)
+	t, s := _shouldRedirect(mux.root, host+path)
 	return !t && s
+}
+
+type methodNotAllowed struct {
+	allowedMethods []string
+}
+
+func (h methodNotAllowed) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	hdr := w.Header()
+	for _, m := range h.allowedMethods {
+		hdr.Add("Allow", m)
+	}
+	http.Error(w, "405 method not allowed", http.StatusMethodNotAllowed)
 }
 
 // notFoundHandler to be used.
 var notFoundHandler = http.NotFoundHandler()
 
+type resultError struct {
+	h   http.Handler
+	msg string
+}
+
+func (r *resultError) Error() string {
+	return r.msg
+}
+
 // handler searches the handler for host, method and path. The context of the
 // provided request might be modified to store the variable segment map.
 func (mux *Mux) handler(r *http.Request, host, method, path string) (h http.Handler, pattern string, s *http.Request) {
-	p := searchPath(host, method, path)
 	m := make(map[string]string, 8)
 
 	mux.mutex.RLock()
 	defer mux.mutex.RUnlock()
 
-	t := findTerminal(mux.root, p, m)
-	if t == nil {
-		return notFoundHandler, "", r
+	res, err := findResult(mux.root, host+path, method, m)
+	if err != nil {
+		var rerr *resultError
+		if errors.As(err, &rerr) {
+			return rerr.h, "", r
+		}
 	}
-	return t.h, t.pattern, withVarMap(r, m)
+	return res.h, res.pattern, withVarMap(r, m)
 }
 
 // The following functions and functions including ServeHTTP were copied from
@@ -484,17 +492,29 @@ const (
 	terminalKey = "{$}"
 )
 
+// result represents the result of a search in the pattern tree.
+type result struct {
+	h       http.Handler
+	pattern string
+}
+
+// methodNode is the terminating node in the path tree supporting the methods.
+type methodNode struct {
+	m           map[string]result
+	wildcardVar string
+	methods     []string
+}
+
 // node describes a node in the pattern tree. Terminal nodes have the handler
 // and the pattern set, but have a nil map m and an empty wildcardVar string.
 // The special keys [wildcardKey], [suffixKey] and [terminalKey] are used. The
 // suffixKey and the terminalKey are the only keys that will point to terminal
 // nodes.
 type node struct {
-	m         map[string]*node
-	wildcards []string
-	suffixVar string
-	h         http.Handler
-	pattern   string
+	m          map[string]*node
+	wildcards  []string
+	suffixVar  string
+	methodNode *methodNode
 }
 
 // insert a wildcard in lexicographic order to the node.
@@ -552,24 +572,52 @@ func jump(pattern []string) (path string, ok bool) {
 	return strings.Join(pattern, "/"), true
 }
 
+func updateMethodNode(m *methodNode, method string, r result) (o *methodNode, err error) {
+	var methodKey, methodVar string
+	if method[0] == '{' {
+		methodKey = "{}"
+		methodVar = method[1 : len(method)-1]
+	} else {
+		methodKey = method
+		methodVar = ""
+	}
+	if m == nil {
+		return &methodNode{
+				m:           map[string]result{methodKey: r},
+				wildcardVar: methodVar,
+				methods:     []string{methodKey},
+			},
+			nil
+	}
+	if _, ok := m.m[methodKey]; ok {
+		return nil, fmt.Errorf("%w; method redundant for pattern %s",
+			ErrPattern, r.pattern)
+	}
+	m.m[methodKey] = r
+	m.methods = append(m.methods, methodKey)
+	return m, nil
+}
+
 // register registers the handler and original pattern under node o using the
 // remaining pattern.
-func register(o *node, pattern []string, h http.Handler, origPattern string) (*node, error) {
+func register(o *node, pattern []string, method string, res result) (*node, error) {
 	var err error
-	if h == nil {
-		panic("handler h is nil")
-	}
 
 	if path, ok := jump(pattern); ok {
+		var q *node
 		if o != nil {
-			if q := o.m[path]; q != nil {
-				return o, fmt.Errorf(
-					"%w; redundant pattern", ErrPattern)
-			}
+			q = o.m[path]
 		} else {
 			o = &node{m: make(map[string]*node, 1)}
 		}
-		o.m[path] = &node{h: h, pattern: origPattern}
+		if q == nil {
+			q = &node{}
+		}
+		q.methodNode, err = updateMethodNode(q.methodNode, method, res)
+		if err != nil {
+			return nil, err
+		}
+		o.m[path] = q
 		return o, nil
 	}
 
@@ -589,7 +637,7 @@ func register(o *node, pattern []string, h http.Handler, origPattern string) (*n
 			} else {
 				o = &node{m: make(map[string]*node, 1)}
 			}
-			q, err := register(q, nil, h, origPattern)
+			q, err := register(q, nil, method, res)
 			if err != nil {
 				return o, err
 			}
@@ -606,16 +654,20 @@ func register(o *node, pattern []string, h http.Handler, origPattern string) (*n
 				return o, fmt.Errorf("%w; %s is not at end",
 					ErrPattern, p)
 			}
+			var q *node
 			if o != nil {
-				if q := o.m[suffixKey]; q != nil {
-					return o, fmt.Errorf(
-						"%w; redundant pattern",
-						ErrPattern)
-				}
+				q = o.m[suffixKey]
 			} else {
 				o = &node{m: make(map[string]*node, 1)}
 			}
-			o.m[suffixKey] = &node{h: h}
+			if q == nil {
+				q = &node{}
+			}
+			q.methodNode, err = updateMethodNode(q.methodNode, method, res)
+			if err != nil {
+				return nil, err
+			}
+			o.m[suffixKey] = q
 			o.suffixVar = wcVar
 			return o, nil
 		}
@@ -625,7 +677,7 @@ func register(o *node, pattern []string, h http.Handler, origPattern string) (*n
 		} else {
 			o = &node{m: make(map[string]*node, 1)}
 		}
-		q, err = register(q, pattern[1:], h, origPattern)
+		q, err = register(q, pattern[1:], method, res)
 		if err != nil {
 			return o, err
 		}
@@ -639,7 +691,7 @@ func register(o *node, pattern []string, h http.Handler, origPattern string) (*n
 	} else {
 		o = &node{m: make(map[string]*node, 1)}
 	}
-	q, err = register(q, pattern[1:], h, origPattern)
+	q, err = register(q, pattern[1:], method, res)
 	if err != nil {
 		return o, err
 	}
@@ -647,46 +699,80 @@ func register(o *node, pattern []string, h http.Handler, origPattern string) (*n
 	return o, nil
 }
 
-// findTerminal tries to find a terminal node using the path. It fills the
+func findMethod(q *node, method string, m map[string]string) (r result, err error) {
+	if q == nil {
+		return result{}, &resultError{h: notFoundHandler,
+			msg: "mux: path not found"}
+	}
+	u := q.methodNode
+	var ok bool
+	r, ok = u.m[method]
+	if ok {
+		return r, nil
+	}
+	r, ok = u.m["{}"]
+	if ok {
+		if m != nil && u.wildcardVar != "" {
+			m[u.wildcardVar] = method
+		}
+		return r, nil
+	}
+	return result{}, &resultError{
+		h:   methodNotAllowed{allowedMethods: u.methods},
+		msg: "mux: method not allowed",
+	}
+}
+
+// findResult tries to find a terminal node using the path. It fills the
 // variable map m if it is not nil. If the t is nil, no terminal could be found.
-func findTerminal(o *node, path string, m map[string]string) *node {
+func findResult(o *node, path string, method string, m map[string]string) (r result, err error) {
+	var ferr error
 	if path == terminalKey {
-		return o.m[terminalKey]
+		q := o.m[terminalKey]
+		return findMethod(q, method, m)
 	}
 	seg, tail, sep := strings.Cut(path, "/")
 	if sep {
 		// check for jump
 		q := o.m[path]
 		if q != nil {
-			return q
+			return findMethod(q, method, m)
 		}
 	} else {
 		tail = terminalKey
 	}
 	q := o.m[seg]
 	if q != nil {
-		if t := findTerminal(q, tail, m); t != nil {
-			return t
+		r, err = findResult(q, tail, method, m)
+		if err == nil {
+			return r, nil
 		}
+		ferr = err
 	}
 	for _, key := range o.wildcards {
 		q = o.m[key]
 		if q != nil {
-			if t := findTerminal(q, tail, m); t != nil {
+			r, err = findResult(q, tail, method, m)
+			if err == nil {
 				if m != nil && key != "{}" {
 					// remove the braces around the variable
 					m[key[1:len(key)-1]] = seg
 				}
-				return t
+				return r, nil
 			}
+			ferr = err
 		}
 	}
 	q = o.m[suffixKey]
-	if q != nil {
+	r, err = findMethod(q, method, m)
+	if err == nil {
 		if m != nil && o.suffixVar != "" {
 			m[o.suffixVar] = path
 		}
-		return q
+		return r, nil
 	}
-	return q
+	if ferr != nil {
+		err = ferr
+	}
+	return result{}, err
 }
