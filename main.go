@@ -297,27 +297,39 @@ func (mux *Mux) HandleFunc(pattern string, handler func(http.ResponseWriter, *ht
 }
 
 // searchPath converts host, method and path to a search path for the mux tree.
-func searchPath(host, method, path string) []string {
-	s := strings.Split("/"+path, "/")
-	s[0] = host
-	s[1] = method
-	return s
+func searchPath(host, method, path string) string {
+	sb := new(strings.Builder)
+	sb.WriteString(host)
+	sb.WriteByte('/')
+	sb.WriteString(method)
+	sb.WriteString(path)
+	return sb.String()
 }
 
 // _shouldRedirect returns whether there is a  direct terminal key (t=true) or
 // whether there is a suffix key (s == true). The application should redirect if
 // !t && s.
-func _shouldRedirect(o *node, path []string) (t, s bool) {
-	if len(path) == 0 {
+func _shouldRedirect(o *node, path string) (t, s bool) {
+	if path == terminalKey {
 		_, t = o.m[terminalKey]
 		_, s = o.m[suffixKey]
 		return t, s
 	}
-	p := path[0]
-	q := o.m[p]
+	seg, tail, sep := strings.Cut(path, "/")
+	if sep {
+		if q := o.m[path]; q != nil {
+			return true, false
+		}
+	} else {
+		if seg == "" {
+			return true, false
+		}
+		tail = terminalKey
+	}
+	q := o.m[seg]
 	var x bool
 	if q != nil {
-		t, x = _shouldRedirect(q, path[1:])
+		t, x = _shouldRedirect(q, tail)
 		s = s || x
 		if t {
 			return t, s
@@ -326,7 +338,7 @@ func _shouldRedirect(o *node, path []string) (t, s bool) {
 	for _, key := range o.wildcards {
 		q = o.m[key]
 		if q != nil {
-			t, x = _shouldRedirect(q, path[1:])
+			t, x = _shouldRedirect(q, tail)
 			s = s || x
 			if t {
 				return t, s
@@ -522,6 +534,24 @@ func matchWildcard(s string) (wc string, suffix bool, ok bool) {
 	return wc, suffix, true
 }
 
+func jump(pattern []string) (path string, ok bool) {
+	switch len(pattern) {
+	case 0:
+		return terminalKey, true
+	case 1:
+		return "", false
+	}
+	if pattern[len(pattern)-1] == "" {
+		return "", false
+	}
+	for _, s := range pattern {
+		if s[0] == '{' {
+			return "", false
+		}
+	}
+	return strings.Join(pattern, "/"), true
+}
+
 // register registers the handler and original pattern under node o using the
 // remaining pattern.
 func register(o *node, pattern []string, h http.Handler, origPattern string) (*node, error) {
@@ -529,18 +559,20 @@ func register(o *node, pattern []string, h http.Handler, origPattern string) (*n
 	if h == nil {
 		panic("handler h is nil")
 	}
-	if len(pattern) == 0 {
+
+	if path, ok := jump(pattern); ok {
 		if o != nil {
-			if q := o.m[terminalKey]; q != nil {
+			if q := o.m[path]; q != nil {
 				return o, fmt.Errorf(
 					"%w; redundant pattern", ErrPattern)
 			}
 		} else {
 			o = &node{m: make(map[string]*node, 1)}
 		}
-		o.m[terminalKey] = &node{h: h, pattern: origPattern}
+		o.m[path] = &node{h: h, pattern: origPattern}
 		return o, nil
 	}
+
 	p := pattern[0]
 	if p == "" && len(pattern) == 1 {
 		p = suffixKey
@@ -551,7 +583,18 @@ func register(o *node, pattern []string, h http.Handler, origPattern string) (*n
 				return o, fmt.Errorf("%w; {$} not at end",
 					ErrPattern)
 			}
-			return register(o, nil, h, origPattern)
+			var q *node
+			if o != nil {
+				q = o.m[""]
+			} else {
+				o = &node{m: make(map[string]*node, 1)}
+			}
+			q, err := register(q, nil, h, origPattern)
+			if err != nil {
+				return o, err
+			}	
+			o.m[""] = q
+			return o, nil
 		}
 		wcVar, suffix, ok := matchWildcard(p)
 		if !ok {
@@ -592,7 +635,6 @@ func register(o *node, pattern []string, h http.Handler, origPattern string) (*n
 	}
 	var q *node
 	if o != nil {
-
 		q = o.m[p]
 	} else {
 		o = &node{m: make(map[string]*node, 1)}
@@ -607,24 +649,33 @@ func register(o *node, pattern []string, h http.Handler, origPattern string) (*n
 
 // findTerminal tries to find a terminal node using the path. It fills the
 // variable map m if it is not nil. If the t is nil, no terminal could be found.
-func findTerminal(o *node, path []string, m map[string]string) *node {
-	if len(path) == 0 {
+func findTerminal(o *node, path string, m map[string]string) *node {
+	if path == terminalKey {
 		return o.m[terminalKey]
 	}
-	p := path[0]
-	q := o.m[p]
+	seg, tail, sep := strings.Cut(path, "/")
+	if sep {
+		// check for jump
+		q := o.m[path]
+		if q != nil {
+			return q
+		}
+	} else {
+		tail = terminalKey
+	}
+	q := o.m[seg]
 	if q != nil {
-		if t := findTerminal(q, path[1:], m); t != nil {
+		if t := findTerminal(q, tail, m); t != nil {
 			return t
 		}
 	}
 	for _, key := range o.wildcards {
 		q = o.m[key]
 		if q != nil {
-			if t := findTerminal(q, path[1:], m); t != nil {
+			if t := findTerminal(q, tail, m); t != nil {
 				if m != nil && key != "{}" {
 					// remove the braces around the variable
-					m[key[1:len(key)-1]] = p
+					m[key[1:len(key)-1]] = seg
 				}
 				return t
 			}
@@ -633,12 +684,9 @@ func findTerminal(o *node, path []string, m map[string]string) *node {
 	q = o.m[suffixKey]
 	if q != nil {
 		if m != nil && o.suffixVar != "" {
-			m[o.suffixVar] = strings.Join(path, "/")
+			m[o.suffixVar] = path
 		}
 		return q
-	}
-	if len(path) == 1 && p == "" {
-		q = o.m[terminalKey]
 	}
 	return q
 }
