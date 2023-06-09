@@ -344,28 +344,39 @@ func (mux *Mux) shouldRedirect(host, method, path string) bool {
 	return !t && s
 }
 
-type methodNotAllowed struct {
-	allowedMethods []string
-}
-
-func (h methodNotAllowed) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	hdr := w.Header()
-	for _, m := range h.allowedMethods {
-		hdr.Add("Allow", m)
-	}
-	http.Error(w, "405 method not allowed", http.StatusMethodNotAllowed)
-}
-
 // notFoundHandler to be used.
 var notFoundHandler = http.NotFoundHandler()
 
-type resultError struct {
-	h   http.Handler
-	msg string
+type resultError interface {
+	error
+	handler() http.Handler
 }
 
-func (r *resultError) Error() string {
-	return r.msg
+type notFoundError struct{}
+
+func (err *notFoundError) Error() string {
+	return "mux: page not found Error"
+}
+
+func (err *notFoundError) handler() http.Handler { return notFoundHandler }
+
+type notAllowedMethodError struct {
+	allow []string
+}
+
+func (err *notAllowedMethodError) Error() string {
+	return "mux: method not allowed"
+}
+
+func (err *notAllowedMethodError) handler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hdr := w.Header()
+		for _, m := range err.allow {
+			hdr.Add("Allow", m)
+		}
+		http.Error(w, "405 method not allowed",
+			http.StatusMethodNotAllowed)
+	})
 }
 
 // handler searches the handler for host, method and path. The context of the
@@ -378,9 +389,9 @@ func (mux *Mux) handler(r *http.Request, host, method, path string) (h http.Hand
 
 	res, err := findResult(mux.root, host+path, method, m)
 	if err != nil {
-		var rerr *resultError
+		var rerr resultError
 		if errors.As(err, &rerr) {
-			return rerr.h, "", r
+			return rerr.handler(), "", r
 		}
 	}
 	return res.h, res.pattern, withVarMap(r, m)
@@ -699,10 +710,46 @@ func register(o *node, pattern []string, method string, res result) (*node, erro
 	return o, nil
 }
 
+func unique(x []string) []string {
+	sort.Strings(x)
+	j := 0
+	for i := 1; i < len(x); i++ {
+		s := x[i]
+		if s == x[j] {
+			continue
+		}
+		j++
+		if i > j {
+			x[j] = s
+		}
+	}
+	j++
+	return x[:j]
+}
+
+func mergeErrors(oldErr error, newErr error) error {
+	if oldErr == nil {
+		return newErr
+	}
+	if newErr == nil {
+		return oldErr
+	}
+	var oldNAMErr, newNAMErr *notAllowedMethodError
+	if errors.As(oldErr, &oldNAMErr) {
+		if errors.As(newErr, &newNAMErr) {
+			newNAMErr.allow = append(newNAMErr.allow,
+				oldNAMErr.allow...)
+			newNAMErr.allow = unique(newNAMErr.allow)
+			return newNAMErr
+		}
+		return oldNAMErr
+	}
+	return newErr
+}
+
 func findMethod(q *node, method string, m map[string]string) (r result, err error) {
 	if q == nil {
-		return result{}, &resultError{h: notFoundHandler,
-			msg: "mux: path not found"}
+		return result{}, &notFoundError{}
 	}
 	u := q.methodNode
 	var ok bool
@@ -717,9 +764,8 @@ func findMethod(q *node, method string, m map[string]string) (r result, err erro
 		}
 		return r, nil
 	}
-	return result{}, &resultError{
-		h:   methodNotAllowed{allowedMethods: u.methods},
-		msg: "mux: method not allowed",
+	return result{}, &notAllowedMethodError{
+		allow: u.methods,
 	}
 }
 
@@ -736,7 +782,11 @@ func findResult(o *node, path string, method string, m map[string]string) (r res
 		// check for jump
 		q := o.m[path]
 		if q != nil {
-			return findMethod(q, method, m)
+			r, err = findMethod(q, method, m)
+			if err == nil {
+				return r, nil
+			}
+			ferr = mergeErrors(ferr, err)
 		}
 	} else {
 		tail = terminalKey
@@ -747,7 +797,7 @@ func findResult(o *node, path string, method string, m map[string]string) (r res
 		if err == nil {
 			return r, nil
 		}
-		ferr = err
+		ferr = mergeErrors(ferr, err)
 	}
 	for _, key := range o.wildcards {
 		q = o.m[key]
@@ -760,7 +810,7 @@ func findResult(o *node, path string, method string, m map[string]string) (r res
 				}
 				return r, nil
 			}
-			ferr = err
+			ferr = mergeErrors(ferr, err)
 		}
 	}
 	q = o.m[suffixKey]
@@ -771,8 +821,6 @@ func findResult(o *node, path string, method string, m map[string]string) (r res
 		}
 		return r, nil
 	}
-	if ferr != nil {
-		err = ferr
-	}
-	return result{}, err
+	ferr = mergeErrors(ferr, err)
+	return result{}, ferr
 }

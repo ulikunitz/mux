@@ -1,7 +1,9 @@
 package mux
 
 import (
+	"fmt"
 	"net/http"
+	"reflect"
 	"testing"
 )
 
@@ -55,4 +57,36 @@ func TestNewRegexpSet(t *testing.T) {
 		t.Logf("host: %s", r.host)
 		t.Logf("segment: %s", r.segment)
 	*/
+}
+
+func TestUnique(t *testing.T) {
+	tests := []struct {
+		in  []string
+		out []string
+	}{
+		{
+			in:  []string{"b", "a", "b", "a"},
+			out: []string{"a", "b"},
+		},
+		{
+			in:  []string{"b", "c", "a", "c"},
+			out: []string{"a", "b", "c"},
+		},
+		{
+			in:  []string{"b", "c", "a"},
+			out: []string{"a", "b", "c"},
+		},
+	}
+	for i, tc := range tests {
+		tc := tc
+		t.Run(fmt.Sprintf("tc=%d", i+1), func(t *testing.T) {
+			got := unique(tc.in)
+			if !reflect.DeepEqual(got, tc.out) {
+				t.Errorf("removeRedundant(%q): got %q; want %q",
+					tc.in, got, tc.out)
+				return
+			}
+		})
+	}
+
 }
