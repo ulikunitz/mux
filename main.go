@@ -7,9 +7,9 @@
 // The multiplexer is fully functional. It is not widely tested and has not been
 // optimized. Please report any issues you may encounter in [module repo]
 //
-// A multiplexer will be created by
+// The multiplexer can be simply declared.
 //
-//	m := mux.New()
+//	var m mux.Mux
 //
 // The multiplexer supports the ServeHTTP method, so it can be used everywhere a
 // [net/http.Handler] can be used.
@@ -142,11 +142,6 @@ func withVarMap(r *http.Request, m map[string]string) *http.Request {
 type Mux struct {
 	mutex sync.RWMutex
 	root  *node
-}
-
-// New creates a new Mux instance. All instances can be used independently.
-func New() *Mux {
-	return &Mux{}
 }
 
 type regexpSet struct {

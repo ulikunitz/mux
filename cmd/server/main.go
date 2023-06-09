@@ -92,7 +92,7 @@ func main() {
 	addr := ":8443"
 	server := fmt.Sprintf("https://%s%s", host, addr)
 
-	m := mux.New()
+	m := new(mux.Mux)
 	m.Handle("GET {host}/item/{itemNr}", tcHandler("1"))
 	m.Handle("POST {host}/item/{itemNr}", tcHandler("2"))
 	m.Handle("GET localhost/item/{itemNr}", tcHandler("3"))

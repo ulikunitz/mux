@@ -51,7 +51,7 @@ func tcHandler(id string) http.Handler {
 }
 
 func TestMuxOld(t *testing.T) {
-	m := mux.New()
+	m := new(mux.Mux)
 	m.Handle("GET {host}/item/{itemNr}", tcHandler("1"))
 	m.Handle("POST {host}/item/{itemNr}", tcHandler("2"))
 	m.Handle("GET example.org/item/{itemNr}", tcHandler("3"))
@@ -124,7 +124,7 @@ func Example() {
 		}
 	}
 
-	m := mux.New()
+	m := new(mux.Mux)
 	m.HandleFunc("{method} /item/{itemNr}", h)
 	m.HandleFunc("/foo/{remainder...}", h)
 
@@ -317,12 +317,170 @@ func TestMux(t *testing.T) {
 				},
 			},
 		},
+		{
+			patterns: []string{
+				"GET example.org/images/",
+			},
+			testCases: []testCase{
+				{
+					request: "GET https://example.org/images/a.png",
+					status:  200,
+					output: `{
+						"Host": "example.org",
+						"Method": "GET",
+						"Path": "/images/a.png",
+						"Pattern": "GET example.org/images/",
+						"VarMap": {}
+					}`,
+				},
+				{
+					request: "GET https://example.org/images",
+					status:  301,
+					output:  "<a href=\"/images/\">Moved Permanently</a>.\n\n",
+				},
+			},
+		},
+		{
+			patterns: []string{
+				"{method}  {host}/buckets/{bucketID}/objects/{objectID}",
+			},
+			testCases: []testCase{
+				{
+					request: "GET https://example.org/buckets/1/objects/2",
+					status:  200,
+					output: `{
+						"Host": "example.org",
+						"Method": "GET",
+						"Path": "/buckets/1/objects/2",
+						"Pattern": "{method}  {host}/buckets/{bucketID}/objects/{objectID}",
+						"VarMap": {
+						  "bucketID": "1",
+						  "host": "example.org",
+						  "method": "GET",
+						  "objectID": "2"
+						}
+					}`,
+				},
+			},
+		},
+		{
+			patterns: []string{
+				"/users/{userSpec...}",
+			},
+			testCases: []testCase{
+				{
+					request: "GET https://example.org/users/a/b/c",
+					status:  200,
+					output: `{
+						"Host": "example.org",
+						"Method": "GET",
+						"Path": "/users/a/b/c",
+						"Pattern": "/users/{userSpec...}",
+						"VarMap": {
+						  "userSpec": "a/b/c"
+						}
+					}`,
+				},
+			},
+		},
+		{
+			patterns: []string{
+				"{} {}/buckets/{bucketID}/objects/{}",
+				"{} {host}/users/{...}",
+			},
+			testCases: []testCase{
+				{
+					request: "GET https://example.org/buckets/1/objects/2",
+					status:  200,
+					output: `{
+						"Host": "example.org",
+						"Method": "GET",
+						"Path": "/buckets/1/objects/2",
+						"Pattern": "{} {}/buckets/{bucketID}/objects/{}",
+						"VarMap": {
+						  "bucketID": "1"
+						}
+					}`,
+				},
+				{
+					request: "GET https://example.org/users/u101",
+					status:  200,
+					output: `{
+						"Host": "example.org",
+						"Method": "GET",
+						"Path": "/users/u101",
+						"Pattern": "{} {host}/users/{...}",
+						"VarMap": {
+						  "host": "example.org"
+						}
+					}`,
+				},
+			},
+		},
+		{
+			patterns: []string{
+				"/buckets/{bucket2ID}/objects/{objectID}",
+				"/buckets/{bucket1ID}/objects/{objectID}",
+				"/buckets/{bucket2ID}/meta/",
+			},
+			testCases: []testCase{
+				{
+					request: "GET https://example.org/buckets/1/objects/2",
+					status:  200,
+					output: `{
+						"Host": "example.org",
+						"Method": "GET",
+						"Path": "/buckets/1/objects/2",
+						"Pattern": "/buckets/{bucket1ID}/objects/{objectID}",
+						"VarMap": {
+						  "bucket1ID": "1",
+						  "objectID": "2"
+						}
+					}`,
+				},
+				{
+					request: "GET https://example.org/buckets/1/meta",
+					status:  301,
+					output:  "<a href=\"/buckets/1/meta/\">Moved Permanently</a>.\n\n",
+				},
+			},
+		},
+		{
+			patterns: []string{
+				"/{$}",
+				"/",
+			},
+			testCases: []testCase{
+				{
+					request: "GET https://example.org/",
+					status:  200,
+					output: `{
+						"Host": "example.org",
+						"Method": "GET",
+						"Path": "/",
+						"Pattern": "/{$}",
+						"VarMap": {}
+					}`,
+				},
+				{
+					request: "GET https://example.org/foo",
+					status:  200,
+					output: `{
+						"Host": "example.org",
+						"Method": "GET",
+						"Path": "/foo",
+						"Pattern": "/",
+						"VarMap": {}
+					}`,
+				},
+			},
+		},
 	}
 
 	for i, ts := range tests {
 		ts := ts
 		t.Run(fmt.Sprintf("s=%d", i+1), func(t *testing.T) {
-			m := mux.New()
+			m := new(mux.Mux)
 			for _, p := range ts.patterns {
 				m.Handle(p, handler(p))
 			}
@@ -377,6 +535,7 @@ func TestMux(t *testing.T) {
 					t.Logf("GOT  %q", got)
 					t.Logf("WANT %q", want)
 					t.Errorf("### unexpected output")
+					t.Logf("GOT\n%s", got)
 					continue
 				}
 			}

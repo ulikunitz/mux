@@ -50,6 +50,39 @@ func TestHandle(t *testing.T) {
 	}
 }
 
+func TestHandle2(t *testing.T) {
+
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	tests := []struct {
+		p    string
+		fail bool
+	}{
+		{p: "/users/{userSpec...}"},
+		{p: "/users/{uSpec...}", fail: true},
+	}
+
+	var mux Mux
+	for _, tc := range tests {
+		var r any
+		func() {
+			defer func() {
+				r = recover()
+			}()
+			mux.Handle(tc.p, h)
+		}()
+		if tc.fail {
+			if r == nil {
+				t.Errorf("%q: no panic; expected it", tc.p)
+			}
+			continue
+		}
+		if r != nil {
+			t.Errorf("%q: got panic %v; expected none", tc.p, r)
+			continue
+		}
+	}
+}
+
 func TestNewRegexpSet(t *testing.T) {
 	/* r := */ newRegexpSet()
 	/*
